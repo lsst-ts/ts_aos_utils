@@ -1,0 +1,38 @@
+{% set data= load_setup_py_data() %}
+package:
+  name: ts-aos-utils
+  version: {{ data.get('version') }}
+
+source:
+  path: ../
+
+build:
+  noarch: python
+  script: {{ PYTHON }} -m pip install --no-deps --ignore-installed .
+
+test:
+  requires:
+    - ts-conda-build =0.3
+  source_files:
+    - python
+    - tests
+    - pyproject.toml
+  commands:
+    - pytest
+
+requirements:
+  host:
+    - python {{ python }}
+    - numpy {{ numpy }}
+    - pip
+    - setuptools_scm
+    - setuptools
+  build:
+    - python {{ python }}
+    - numpy {{ numpy }}
+    - setuptools
+    - setuptools_scm
+    - ts-conda-build =0.3
+  run:
+    - python {{ python }}
+    - numpy {{ numpy }}

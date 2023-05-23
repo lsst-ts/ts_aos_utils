@@ -31,12 +31,14 @@ You can find Jira issues for this module under the `ts_aos_utils <https://jira.l
 .. .. toctree::
 ..    :maxdepth: 1
 
-.. .. _lsst.ts.aos.utils-scripts:
+.. _lsst.ts.aos.utils-version-history:
 
-.. Script reference
-.. ================
+Version History
+===============
 
-.. .. TODO: Add an item to this toctree for each script reference topic in the scripts subdirectory.
+.. toctree::
+    version-history
+    :maxdepth: 1
 
 .. .. toctree::
 ..    :maxdepth: 1

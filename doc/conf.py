@@ -5,10 +5,9 @@ For more information, see:
 https://developer.lsst.io/stack/building-single-package-docs.html
 """
 
-from documenteer.conf.pipelinespkg import *
-
+from documenteer.conf.pipelinespkg import *  # noqa
 
 project = "ts_aos_utils"
-html_theme_options["logotext"] = project
+html_theme_options["logotext"] = project  # noqa
 html_title = project
 html_short_title = project
