@@ -18,7 +18,7 @@
 # You should have received a copy of the GNU General Public License along with
 # this program. If not, see <https://www.gnu.org/licenses/>.
 
-# This file originally lived in the file: 
+# This file originally lived in the file:
 #   https://github.com/lsst-ts/ts_cRIOpy/blob/main/python/lsst/ts/cRIOpy/M1M3FATable.py
 
 __all__ = [
