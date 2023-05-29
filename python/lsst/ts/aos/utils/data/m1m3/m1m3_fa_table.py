@@ -29,6 +29,8 @@ __all__ = [
     "onlyfar_neighbor_indices",
 ]
 
+import typing as tp
+
 FATABLE_INDEX = 0
 FATABLE_ID = 1
 FATABLE_XPOSITION = 2
@@ -2701,11 +2703,63 @@ FATABLE = [
 ]
 
 
-def actuator_id_to_index(actuator_id, value_index=FATABLE_INDEX):
+def actuator_id_to_index(actuator_id: int, value_index: int = FATABLE_INDEX) -> int:
+    """Convert an actuator ID (e.g., 408 or 139) into an array index
+    (e.g., 122 or 38) based on the Force Actuators Table defined in
+    ``FATABLE``.
+
+    Parameters
+    ----------
+    actuator_id : int
+        Represents the physical actuator identifier in the hardware,
+        which contains implicit information about its position inside M1M3.
+    value_index : int
+        Index of the column associated with the actuator IDs in ``FATABLE``.
+
+    Returns
+    -------
+    int
+        Index of the FATABLE row associated with the input actuator ID.
+
+    Raises
+    ------
+    StopIteration
+        If the actuator ID is not found in the ``FATABLE``.
+    IndexError
+        If the ``FATABLE_INDEX`` is out of range.
+
+    """
     return next(f for f in FATABLE if f[FATABLE_ID] == actuator_id)[value_index]
 
 
-def near_neighbor_indices(index, value_index=FATABLE_INDEX):
+def near_neighbor_indices(index: int, value_index: int = FATABLE_INDEX) -> tp.List[int]:
+    """Find the actuators that are close to the input actuator.
+
+    Parameters
+    ----------
+    index : int
+        Actuator index corresponding to a row in the ``FATABLE``.
+    value_index : int, optional
+        Column index associated with the near neighbors in the ``FATABLE``.
+        Defaults to ``FATABLE_INDEX``.
+
+    Returns
+    -------
+    list of int
+        A list containing the row indexes associated with all the
+        actuators near the input actuator.
+
+    Raises
+    ------
+    ValueError
+        If the input index is out of range.
+
+    Examples
+    --------
+    >>> near_neighbor_indices(3)
+    # Corresponds to actuators [105, 411, 410, 103, 110, 111]
+    [4, 125, 124, 2, 9, 10]
+    """
     return filter(
         lambda n: n is not None,
         (
@@ -2716,6 +2770,36 @@ def near_neighbor_indices(index, value_index=FATABLE_INDEX):
 
 
 def far_neighbor_indices(index, value_index=FATABLE_INDEX):
+    """Find the actuators that are farthest from the input actuator.
+
+    Parameters
+    ----------
+    index : int
+        Actuator index corresponding to a row in the ``FATABLE``.
+    value_index : int, optional
+        Column index associated with the far neighbors in the ``FATABLE``.
+        Defaults to ``FATABLE_INDEX``.
+
+    Returns
+    -------
+    list of int
+        A list containing the row indexes associated with all the
+        actuators far from the input actuator.
+
+    Raises
+    ------
+    ValueError
+        If the input index is out of range.
+    KeyError
+        If the ``FATABLE_FAR_NEIGHBOR_INDEX`` is invalid.
+
+    Examples
+    --------
+    >>> far_neighbor_indices(3)
+    # Corresponds to actuators
+    # [110, 111, 410, 411, 103, 105, 109, 112, 409, 412, 117, 417]
+    [9, 10, 124, 125, 2, 4, 8, 11, 123, 126, 16, 136]
+    """
     return filter(
         lambda n: n is not None,
         (
@@ -2725,14 +2809,52 @@ def far_neighbor_indices(index, value_index=FATABLE_INDEX):
     )
 
 
-def onlyfar_neighbor_indices(index, value_index=FATABLE_INDEX):
-    return filter(
-        lambda n: n is not None,
-        (
-            actuator_id_to_index(f, value_index)
-            for f in filter(
-                lambda faid: faid not in FATABLE[index][FATABLE_NEAR_NEIGHBOR_INDEX],
-                FATABLE[index][FATABLE_FAR_NEIGHBOR_INDEX],
-            )
-        ),
+def onlyfar_neighbor_indices(
+    index: int, value_index: int = FATABLE_INDEX
+) -> tp.List[int]:
+    """Find the actuators that are farthest from the input actuator,
+    excluding the near neighbors.
+
+    Parameters
+    ----------
+    index : int
+        Actuator index corresponding to a row in the `FATABLE`.
+    value_index : int, optional
+        Column index associated with the far neighbors in the `FATABLE`.
+        Defaults to `FATABLE_INDEX`.
+
+    Returns
+    -------
+    list of int
+        A list containing the row indexes associated with the actuators
+        that are farthest from the input actuator, excluding the near
+        neighbors.
+
+    Raises
+    ------
+    ValueError
+        If the input index is out of range.
+    KeyError
+        If the `FATABLE_NEAR_NEIGHBOR_INDEX` or `FATABLE_FAR_NEIGHBOR_INDEX`
+        is invalid.
+
+    Examples
+    --------
+    >>> onlyfar_neighbor_indices(3)
+    # Corresponds to actuators
+    # [109, 112, 409, 412, 117, 417]
+    [8, 11, 123, 126, 16, 136]
+    """
+    return list(
+        filter(
+            lambda n: n is not None,
+            (
+                actuator_id_to_index(f, value_index)
+                for f in filter(
+                    lambda faid: faid
+                    not in FATABLE[index][FATABLE_NEAR_NEIGHBOR_INDEX],
+                    FATABLE[index][FATABLE_FAR_NEIGHBOR_INDEX],
+                )
+            ),
+        )
     )
