@@ -479,6 +479,7 @@ def _set_force_error(data_force: dict) -> dict:
         data_force["lutGravity"]
         + data_force["lutTemperature"]
         + data_force["hardpointCorrection"]
+        + data_force["applied"]
         - data_force["measured"]
     )
     return data_force
@@ -1099,9 +1100,7 @@ def plot_force_error(data_axial: dict, data_tangent: dict) -> None:
         ax.set_xlabel("Time (sec)")
         ax.set_ylabel("Force Error (N)")
 
-    fig.suptitle(
-        "Force Error (lutGravity + lutTemperature + hardpointCorrection - measured)"
-    )
+    fig.suptitle("Force Error (LUT + applied + hardpointCorrection - measured)")
     fig.tight_layout()
 
     plt.show()
