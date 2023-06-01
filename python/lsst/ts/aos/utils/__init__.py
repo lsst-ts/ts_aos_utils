@@ -24,4 +24,4 @@ try:
 except ImportError:
     __version__ = "?"
 
-from .utility_m2 import *
+from .diagnostics_m2 import *
