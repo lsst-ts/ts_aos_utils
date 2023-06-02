@@ -13,6 +13,7 @@ build:
 test:
   requires:
     - ts-conda-build =0.3
+    - ts-m2com
   source_files:
     - python
     - tests
@@ -36,3 +37,4 @@ requirements:
   run:
     - python {{ python }}
     - numpy {{ numpy }}
+    - ts-m2com
