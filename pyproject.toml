@@ -9,7 +9,11 @@ license = { text = "GPL" }
 classifiers = [ "Programming Language :: Python :: 3" ]
 urls = { documentation = "https://jira.lsstcorp.org/secure/Dashboard.jspa", repository = "https://github.com/lsst-ts/ts_aos_utils" }
 dynamic = [ "version" ]
+dependencies = [ "numpy", "astropy" ]
  
+[project.scripts]
+M1M3LUT = "lsst.ts.aos.utils.M1M3LUT:run"
+
 [tools.setuptools]
 package-data = { "" = "*.csv"}
  
