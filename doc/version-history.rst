@@ -2,6 +2,11 @@
 Version History
 ===============
 
+v0.1.2
+======
+
+* Add the **M1M3LUT.py**.
+
 v0.1.1
 ======
 
