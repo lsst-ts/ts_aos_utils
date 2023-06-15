@@ -158,10 +158,10 @@ async def update_lut_force_balance(
         coefs = np.flip(new_poly.convert().coef)
 
         actuator_id = ids[np.where(axis_indices == idx)[0][0]]
-        if force_type == "Balance":
+        if force_type == ForceType.BALANCE:
             coefs = np.insert(coefs, 0, 0)
             table_file.loc[table_file["ID"] == actuator_id] += coefs
-        elif force_type == "Applied":
+        elif force_type == ForceType.APPLIED:
             coefs = np.insert(coefs, 0, actuator_id)
             table_file.loc[table_file["ID"] == actuator_id] = coefs
 
