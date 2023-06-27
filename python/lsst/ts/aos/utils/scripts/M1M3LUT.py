@@ -24,9 +24,10 @@ import asyncio
 import enum
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from astropy.time import Time, TimeDelta
+from astropy.time import Time
 from lsst.ts.cRIOpy import M1M3FATable
 from lsst_efd_client import EfdClient
 from numpy.polynomial import Polynomial
@@ -46,6 +47,7 @@ async def update_lut_force_balance(
     lut_path,
     polynomial_degree,
     resample_rate,
+    binning,
     static_offset=1,
 ) -> None:
     """Update the LUT file with the force balance data from the EFD.
@@ -76,7 +78,7 @@ async def update_lut_force_balance(
     """
 
     # Initialize EFD client
-    client = EfdClient("usdf_efd")
+    client = EfdClient("summit_efd")
 
     # Generate array with the ID of each actuator
     fat = np.array(M1M3FATable.FATABLE, dtype=object)
@@ -111,51 +113,79 @@ async def update_lut_force_balance(
         # Add warning
         print("WARNING: Elevation data is not in the range 20-70 degrees")
 
-    print("Retrieving forces data from EFD...")
     # Get names of actuator forces
     query_forces = [f"{axis.lower()}Forces{i}" for i in range(num_actuators)]
 
-    # Query appliedBalanceForces from EFD from start_time to end_time
-    if force_type == ForceType.BALANCE:
-        forces = await client.select_time_series(
-            "lsst.sal.MTM1M3.appliedBalanceForces",
-            query_forces,
-            start_time,
-            end_time,
-        )
-    elif force_type == ForceType.APPLIED:
-        forces = await client.select_time_series(
-            "lsst.sal.MTM1M3.appliedForces",
-            query_forces,
-            start_time,
-            end_time,
-        )
+    # For each actuator update the LUT row
+    for idx in tqdm(range(num_actuators)):
+        print(f"Retrieving forces data from EFD for {query_forces[idx]}...")
 
-        # query static forces from efd from start_time - 6h to end_time
-        static_forces = await client.select_time_series(
-            "lsst.sal.MTM1M3.logevent_appliedStaticForces",
-            query_forces,
-            start_time - TimeDelta(static_offset),
-            end_time,
-        )
-        static_forces = static_forces.iloc[-1]
+        # Query appliedBalanceForces from EFD from start_time to end_time
+        if force_type == ForceType.BALANCE:
+            forces = await client.select_time_series(
+                "lsst.sal.MTM1M3.appliedBalanceForces",
+                query_forces[idx],
+                start_time,
+                end_time,
+            )
+        elif force_type == ForceType.APPLIED:
+            forces = await client.select_time_series(
+                "lsst.sal.MTM1M3.appliedForces",
+                query_forces[idx],
+                start_time,
+                end_time,
+            )
 
-        for idx in tqdm(range(num_actuators)):
+            # Query static forces from efd. Get the last sample that was
+            # published before start time.
+            query = f"""
+                SELECT "{query_forces[idx]}"
+                FROM "efd"."autogen"."lsst.sal.MTM1M3.logevent_appliedStaticForces"
+                WHERE time < '{start_time.isot}+00:00' ORDER BY DESC LIMIT 1
+            """
+            static_forces = await client.influx_client.query(query)
+
+            static_forces = static_forces.iloc[-1]
+            print(static_forces)
+
             forces[query_forces[idx]] = forces[query_forces[idx]].subtract(
                 static_forces[query_forces[idx]]
             )
 
-    # Resample the data to in bins of length resample_bin
-    # (this can be in minutes, seconds, etc.)
-    forces_resampled = forces.resample(resample_rate).mean()
+        # Resample the data to in bins of length resample_bin
+        # (this can be in minutes, seconds, etc.)
+        forces_resampled = forces.resample(resample_rate).mean()
 
-    print("Fitting forces with polynomial...")
-    # For each actuator update the LUT row
-    for idx in tqdm(range(num_actuators)):
+        result = pd.concat([elevations, forces_resampled], axis=1)
+        bins = np.arange(0, 90, binning) - binning / 2.0
+
+        groups = result.groupby(np.digitize(result["actualPosition"], bins))
+        # Get the mean of a in each group
+        result_binned = groups.mean()
+
+        print(f"Fitting forces with polynomial for {query_forces[idx]}...")
+
         new_poly = Polynomial.fit(
-            90 - elevations, forces_resampled[query_forces[idx]], polynomial_degree
+            90 - result_binned["actualPosition"],
+            result_binned[query_forces[idx]],
+            polynomial_degree,
         )
         coefs = np.flip(new_poly.convert().coef)
+
+        fix, ax = plt.subplots()
+        ax2 = ax.twinx()
+
+        ax.plot(result_binned["actualPosition"], result_binned[query_forces[idx]], "o")
+        el_ax = np.linspace(0, 90)
+        ax.plot(el_ax, new_poly(90 - el_ax))
+        ax2.plot(
+            result_binned["actualPosition"],
+            result_binned[query_forces[idx]]
+            - new_poly(90 - result_binned["actualPosition"]),
+            "x",
+        )
+
+        fix.savefig(f"fit_{query_forces[idx]}.png")
 
         actuator_id = ids[np.where(axis_indices == idx)[0][0]]
         if force_type == ForceType.BALANCE:
@@ -205,6 +235,12 @@ def parse_arguments() -> argparse.Namespace:
         help="Rate at which the data is resampled (default: 1 minute)",
     )
     parser.add_argument(
+        "--binning",
+        default=1.0,
+        help="Binning size for elevation vs forces.",
+        type=float,
+    )
+    parser.add_argument(
         "--static_offset",
         default=1,
         type=int,
@@ -240,6 +276,7 @@ def run() -> None:
             lut_path,
             polynomial_degree,
             resample_rate,
+            binning=float(args.binning),
         )
     )
 
