@@ -2,6 +2,13 @@
 Version History
 ===============
 
+v0.2.0
+======
+
+* Verbose output for M1M3LUT.
+* Update M1M3LUT to ts_criopy >=0.4.
+* Added Jenkinsfile for CI
+
 v0.1.2
 ======
 
