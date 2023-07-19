@@ -27,7 +27,7 @@ import os
 import astropy.units as u
 import numpy as np
 import pandas as pd
-from astropy.time import Time, TimeDelta
+from astropy.time import Time
 from lsst.ts.criopy import M1M3FATable
 from lsst_efd_client import EfdClient
 from numpy.polynomial import Polynomial
@@ -39,70 +39,29 @@ class ForceType(enum.IntEnum):
     APPLIED = 2
 
 
-async def update_lut_force_balance(
-    force_type: ForceType,
-    start_time: Time,
-    end_time: Time,
-    axis: str,
-    lut_path: None | str,
-    polynomial_degree: int,
-    resample_rate: float,
-    static_offset: int = 1,
-    efd_name: str = "usdf_efd",
-) -> None:
-    """Update the LUT file with the force balance data from the EFD.
-    Saves a new .csv file with LUT updated values
+async def retrieve_elevations(
+    start_time: Time, end_time: Time, resample_rate: float, client: EfdClient
+) -> pd.DataFrame:
+    """Retrieve elevations data.
 
     Parameters
     ----------
-    force_type: ForceType
-        Type of force to be updated. ForceType.BALANCE or ForceType.APPLIED
     start_time: astropy.time.Time
         Start time of the data to be queried from the EFD
     end_time: astropy.time.Time
         End time of the data to be queried from the EFD
-    axis: str
-        Axis of the force balance to be updated. Can be 'X', 'Y', or 'Z'
-    lut_path: str
-        Path to the LUT file to be updated
-    polynomial_degree: int
-        Degree of the polynomial to be fitted to the data
     resample_rate: str
         Rate at which the data is resampled. Default is '1T' (1 minute)
-    static_offset: int
-        Offset in days to be used when querying the static forces from the EFD.
-    efd_name: str
-        EFD name.
+    client: EfdClient
+        Client for EFD database
 
     Returns
     -------
-    None
+    data: pd.DataFrame
+        Resampled elevation data.
     """
+
     interval_ms = (end_time - start_time).to(u.ms).value
-    index_type = getattr(M1M3FATable.FAIndex, axis)
-    num_actuators = getattr(M1M3FATable, f"FATABLE_{axis}FA")
-
-    # Initialize EFD client
-    client = EfdClient("usdf_efd")
-
-    # Get path of the LUT file
-    out_file = f"Elevation{axis}Table.csv"
-    if lut_path is None:
-        table_file = pd.DataFrame(
-            {
-                "ID": [row.actuator_id for row in M1M3FATable.FATABLE],
-                "Coefficient 5": [0] * M1M3FATable.FATABLE_ZFA,
-                "Coefficient 4": [0] * M1M3FATable.FATABLE_ZFA,
-                "Coefficient 3": [0] * M1M3FATable.FATABLE_ZFA,
-                "Coefficient 2": [0] * M1M3FATable.FATABLE_ZFA,
-                "Coefficient 1": [0] * M1M3FATable.FATABLE_ZFA,
-                "Coefficient 0": [0] * M1M3FATable.FATABLE_ZFA,
-            }
-        )
-    else:
-        lut_file = os.path.join(lut_path, out_file)
-        print("Reading", lut_file)
-        table_file = pd.read_csv(lut_file)
 
     # Query elevation from EFD from start_time to end_time
     print("Retrieving elevation data from EFD...")
@@ -125,13 +84,70 @@ async def update_lut_force_balance(
 
     if min(elevations) > 20 or max(elevations) < 70:
         # Add warning
-        print("WARNING: Elevation data is not in the range 20-70 degrees")
+        print(
+            "WARNING: Elevation range is not enough for coefficient fitting - shall be in 20-70 degrees range"
+        )
+    return elevations
+
+
+async def update_lut_force_balance(
+    force_type: ForceType,
+    start_time: Time,
+    end_time: Time,
+    axis: str,
+    elevations: pd.DataFrame,
+    lut_path: None | str,
+    polynomial_degree: int,
+    resample_rate: float,
+    client: EfdClient,
+) -> None:
+    """Update the LUT file with the force balance data from the EFD.
+    Saves a new .csv file with LUT updated values
+
+    Parameters
+    ----------
+    force_type: ForceType
+        Type of force to be updated. ForceType.BALANCE or ForceType.APPLIED
+    start_time: astropy.time.Time
+        Start time of the data to be queried from the EFD
+    end_time: astropy.time.Time
+        End time of the data to be queried from the EFD
+    axis: str
+        Axis of the force balance to be updated. Can be 'X', 'Y', or 'Z'
+    elevations: pd.DataFrame
+        Elevation data - see retrieve_elevations how toget those.
+    lut_path: str
+        Path to the LUT file to be updated. Can be None for Applied forces, as
+        it isn't used.
+    polynomial_degree: int
+        Degree of the polynomial to be fitted to the data
+    resample_rate: str
+        Rate at which the data is resampled. Default is '1T' (1 minute)
+    client: EfdClient
+        Client for EFD database
+
+    Returns
+    -------
+    None
+    """
+    interval_ms = (end_time - start_time).to(u.ms).value
+    index_type = getattr(M1M3FATable.FAIndex, axis)
+    num_actuators = getattr(M1M3FATable, f"FATABLE_{axis}FA")
+
+    # Get path of the LUT file
+    out_file = f"Elevation{axis}Table.csv"
 
     # Get names of actuator forces
     query_forces = [f"{axis.lower()}Forces{i}" for i in range(num_actuators)]
 
     # Query appliedBalanceForces from EFD from start_time to end_time
     if force_type == ForceType.BALANCE:
+        assert lut_path is not None
+
+        lut_file = os.path.join(lut_path, out_file)
+        print("Reading elevation coefficients from file", lut_file)
+        table_file = pd.read_csv(lut_file)
+
         print("Retrieving applied balance forces data from EFD...")
         forces = await client.select_time_series(
             "lsst.sal.MTM1M3.appliedBalanceForces",
@@ -140,6 +156,18 @@ async def update_lut_force_balance(
             end_time,
         )
     elif force_type == ForceType.APPLIED:
+        table_file = pd.DataFrame(
+            {
+                "ID": [row.actuator_id for row in M1M3FATable.FATABLE],
+                "Coefficient 5": [0] * M1M3FATable.FATABLE_ZFA,
+                "Coefficient 4": [0] * M1M3FATable.FATABLE_ZFA,
+                "Coefficient 3": [0] * M1M3FATable.FATABLE_ZFA,
+                "Coefficient 2": [0] * M1M3FATable.FATABLE_ZFA,
+                "Coefficient 1": [0] * M1M3FATable.FATABLE_ZFA,
+                "Coefficient 0": [0] * M1M3FATable.FATABLE_ZFA,
+            }
+        )
+
         print("Retrieving applied forces data from EFD...")
         forces = await client.select_time_series(
             "lsst.sal.MTM1M3.appliedForces",
@@ -148,16 +176,14 @@ async def update_lut_force_balance(
             end_time,
         )
 
-        # query static forces from efd from start_time - static_offset to
-        # start_time
-        print("Retrieving static forces data from EFD...")
-        static_forces = await client.select_time_series(
-            "lsst.sal.MTM1M3.logevent_appliedStaticForces",
-            query_forces,
-            start_time - TimeDelta(static_offset),
-            start_time,
-        )
-        static_forces = static_forces.iloc[-1]
+        # Query static forces from efd. Get the last sample that was
+        # published before start time.
+        query = f"""
+            SELECT "{query_forces}"
+            FROM "efd"."autogen"."lsst.sal.MTM1M3.logevent_appliedStaticForces"
+            WHERE time < '{start_time.isot}+00:00' ORDER BY DESC LIMIT 1
+        """
+        static_forces = await client.influx_client.query(query)
 
         for idx in tqdm(range(num_actuators)):
             forces[query_forces[idx]] = forces[query_forces[idx]].subtract(
@@ -192,7 +218,7 @@ async def update_lut_force_balance(
             full=True,
         )
         res = statistics[0][0]
-        print(f"Fit {row.actuator_id} {axis} ({idx: 3}) residuals {res:.5f}")
+        print(f"Fit {row.actuator_id} {axis} ({idx:3d}) residuals {res:.5f}")
         residuals.append(res)
 
         coefs = np.flip(new_poly.convert().coef)
@@ -200,7 +226,7 @@ async def update_lut_force_balance(
         if force_type == ForceType.BALANCE:
             coefs = np.insert(coefs, 0, 0)
             table_file.loc[table_file["ID"] == row.actuator_id] += coefs
-        elif force_type == ForceType.APPLIED:
+        elif force_type == ForceType.BALANCE:
             coefs = np.insert(coefs, 0, row.actuator_id)
             table_file.loc[table_file["ID"] == row.actuator_id] = coefs
 
@@ -237,25 +263,19 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--lut_path", default=None, help="Path to the LUT file to be updated"
+        "--lut-path", default=None, help="Path to the LUT file to be updated"
     )
 
     parser.add_argument(
-        "--polynomial_degree",
+        "--polynomial-degree",
         default=5,
         type=int,
         help="Degree of the polynomial to be fitted to the data",
     )
     parser.add_argument(
-        "--resample_rate",
+        "--resample-rate",
         default="1T",
         help="Rate at which the data is resampled (default: 1 minute)",
-    )
-    parser.add_argument(
-        "--static_offset",
-        default=1 * u.day,
-        type=int,
-        help="Offset in hours to be used when querying static forces",
     )
     parser.add_argument(
         "--efd",
@@ -266,31 +286,41 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run() -> None:
-    """Main function to run the update_lut_force_balance function."""
-    args = parse_arguments()
-
+async def fit_tables(args: argparse.Namespace):
     force_type = getattr(ForceType, args.force_type.upper())
-    resample_rate = (
-        args.resample_rate
-    )  # User-provided resample rate (default: 1 minute)
+
+    # Initialize EFD client
+    print("Conecting to EFD", args.efd)
+    client = EfdClient(args.efd)
+
+    elevations = await retrieve_elevations(
+        args.start_time, args.end_time, args.resample_rate, client
+    )
+
+    if force_type == ForceType.BALANCE:
+        if args.lut_path is None:
+            print("--lut-path argument, required for Balance forces, is missing")
+            return
 
     for axis in args.axes:
-        print("Fitting", axis, "axis")
+        print(f"Fitting elevation coefficients for {axis} axis")
         # Run the update_lut_force_balance function asynchronously
-        asyncio.run(
-            update_lut_force_balance(
-                force_type,
-                args.start_time,
-                args.end_time,
-                axis,
-                args.lut_path,
-                args.polynomial_degree,
-                resample_rate,
-                args.static_offset,
-                args.efd,
-            )
+        await update_lut_force_balance(
+            force_type,
+            args.start_time,
+            args.end_time,
+            axis,
+            elevations,
+            args.lut_path,
+            args.polynomial_degree,
+            args.resample_rate,
+            client,
         )
+
+
+def run() -> None:
+    """Main function to run the update_lut_force_balance function."""
+    asyncio.run(fit_tables(parse_arguments()))
 
 
 if __name__ == "__main__":
