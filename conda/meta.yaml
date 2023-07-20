@@ -15,6 +15,10 @@ test:
     - tqdm
     - ts-conda-build =0.3
     - ts-m2com
+    - pandas
+    - numpy
+    - astropy
+    - scipy
     - ts-criopy >=0.4
   source_files:
     - python
@@ -39,6 +43,8 @@ requirements:
   run:
     - python {{ python }}
     - numpy {{ numpy }}
+    - astropy
+    - scipy
     - tqdm
     - ts-m2com
     - ts-criopy =>0.4
