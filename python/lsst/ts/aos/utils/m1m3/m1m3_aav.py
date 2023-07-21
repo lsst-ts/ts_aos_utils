@@ -21,18 +21,24 @@
 
 import argparse
 import asyncio
+import os
+import pathlib
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from astropy.time import Time, TimeDelta
+from astropy.time import Time
+from lsst.ts.criopy import M1M3FATable
+from lsst.ts.criopy.m1m3 import ForceCalculator
 from lsst_efd_client import EfdClient
+from tqdm import tqdm
 
 
 class AccelerationAndVelocities:
-    def __init__(self, efd_name: str):
+    def __init__(self, efd_name: str, config: str):
         self.efd_name = efd_name
-        self.actual_velocity_limit = 0.03
+        self.force_calculator = ForceCalculator(config)
+
+        self.actual_velocity_limit = 0.01
         self.demand_velocity_limit = 1e-5
 
     async def find_non_zero(
@@ -42,18 +48,19 @@ class AccelerationAndVelocities:
 
         async def find_axis(axis: str) -> pd.DataFrame:
             query = (
-                "SELECT actualVelocity, demandVelocity "
+                "SELECT timestamp, actualVelocity, demandVelocity "
                 f'FROM "efd"."autogen"."lsst.sal.MTMount.{axis}" '
                 f"WHERE time > '{start_time.isot}+00:00' AND time < '{end_time.isot}+00:00' "
                 f"AND ((abs(actualVelocity) > {self.actual_velocity_limit:f}) or "
                 f"(abs(demandVelocity) > {self.demand_velocity_limit:f}))"
             )
-            print("Quering EFD:", query)
+            print("Querying EFD:", query)
             ret = await self.client.influx_client.query(query)
+            ret.set_index("timestamp", inplace=True)
             ret["timediff"] = ret.index.to_series().diff()
 
             # calculate derivatives - acceleration
-            den = ret["timediff"].dt.total_seconds()
+            den = ret["timediff"]
             ret["demandAcceleration"] = ret["demandVelocity"].diff().div(den, axis=0)
             ret["actualAcceleration"] = ret["actualVelocity"].diff().div(den, axis=0)
             return ret
@@ -72,10 +79,10 @@ class AccelerationAndVelocities:
         start = None
         end = None
         for index, row in df_moving[
-            (df_moving.timediff > np.timedelta64(1, "s")) | (df_moving.timediff is None)
+            (df_moving.timediff > 1) | (df_moving.timediff is None)
         ].iterrows():
             end = index - row["timediff"]
-            if start is not None and (end - start) > TimeDelta(0.5, format="sec"):
+            if start is not None and (end - start) > 0.5:
                 ret.append([start, end, len(df_notmoving[start:end].index) == 0])
             start = index
 
@@ -85,14 +92,43 @@ class AccelerationAndVelocities:
         print(f"Retrieving HP data for {start_time} - {end_time}..", end="")
         ret = await self.client.select_time_series(
             "lsst.sal.MTM1M3.hardpointActuatorData",
-            [f"measuredForce{hp}" for hp in range(6)]
+            ["timestamp"]
+            + [f"measuredForce{hp}" for hp in range(6)]
             + [f"f{a}" for a in "xyz"]
             + [f"m{a}" for a in "xyz"],
-            Time(start_time),
-            Time(end_time),
+            Time(start_time, format="unix_tai"),
+            Time(end_time, format="unix_tai"),
         )
+        ret.set_index("timestamp", inplace=True)
         print("OK")
         return ret
+
+    def mirror_forces(self, fit: pd.DataFrame) -> pd.DataFrame:
+        forces = {}
+        for x in range(M1M3FATable.FATABLE_XFA):
+            forces[f"X{x}"] = []
+        for y in range(M1M3FATable.FATABLE_YFA):
+            forces[f"Y{y}"] = []
+        for z in range(M1M3FATable.FATABLE_ZFA):
+            forces[f"Z{z}"] = []
+
+        for index, row in tqdm(
+            fit.iterrows(), total=fit.shape[0], desc="Calculating mirror forces"
+        ):
+            mirror_forces = self.force_calculator.forces_and_moments_forces(
+                [row["fx"], row["fy"], row["fz"], row["mx"], row["my"], row["mz"]]
+            )
+            for x in range(M1M3FATable.FATABLE_XFA):
+                forces[f"X{x}"].append(mirror_forces.xForces[x])
+            for y in range(M1M3FATable.FATABLE_YFA):
+                forces[f"Y{y}"].append(mirror_forces.yForces[y])
+            for z in range(M1M3FATable.FATABLE_ZFA):
+                forces[f"Z{z}"].append(mirror_forces.zForces[z])
+
+        df = pd.DataFrame(forces, index=fit.index)
+        print(df)
+
+        return fit.merge(df, how="left", left_index=True, right_index=True)
 
     async def fit_aav(self, start_time: Time, end_time: Time, plot: bool) -> None:
         self.client = EfdClient(self.efd_name)
@@ -102,7 +138,7 @@ class AccelerationAndVelocities:
         intervals = await self.find_applicable_times(elevations, azimuths)
         fit = pd.DataFrame()
         for index, row in intervals[intervals.use].iterrows():
-            block_start = row["start"] - pd.Timedelta("2s")
+            block_start = row["start"] - 2
             block_end = row["end"] + 2
             hardpoints = await self.load_hardpoints(block_start, block_end)
             elevations_hardpoints = elevations[
@@ -123,16 +159,16 @@ class AccelerationAndVelocities:
         print("Hardpoint data retrieved")
         print(elevations_hardpoints.describe())
         print(fit)
-        fit.drop(columns=["timediff"], inplace=True)
-        print(fit.dtypes)
-        # fit = fit.interpolate(method="polynomial", order=5)
-        fit = fit.interpolate(method="time")  # , order=5)
+        fit.to_hdf("raw.hd5", "raw")
+        fit = fit.interpolate()  # method="time")
         print(fit.describe())
         print(fit)
-        fit.to_hdf("fit.hd5", "fit")
-        plt.plot(fit["demandVelocity"], fit["my"], ".")
-        plt.plot(fit["demandAcceleration"], fit["my"], ".")
-        plt.show()
+        mirror = self.mirror_forces(fit)
+        mirror.to_hdf("fit.hd5", "fit")
+        print(mirror)
+        # plt.plot(fit["demandVelocity"], fit["my"], ".")
+        # plt.plot(fit["demandAcceleration"], fit["my"], ".")
+        # plt.show()
         # print(df)
 
 
@@ -167,6 +203,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--plot", default=False, action="store_true", help="Plot graphs during"
     )
+    parser.add_argument(
+        "--config",
+        default=pathlib.Path(os.environ["TS_CONFIG_MTTCS_DIR"]) / "MTM1M3" / "v1",
+        help="M1M3 configuration directory",
+    )
 
     return parser.parse_args()
 
@@ -174,7 +215,7 @@ def parse_arguments() -> argparse.Namespace:
 async def run_loop() -> None:
     args = parse_arguments()
 
-    aav = AccelerationAndVelocities(args.efd)
+    aav = AccelerationAndVelocities(args.efd, args.config)
     await aav.fit_aav(args.start_time, args.end_time, args.plot)
 
 
