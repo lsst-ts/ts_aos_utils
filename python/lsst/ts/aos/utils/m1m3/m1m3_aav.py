@@ -24,7 +24,7 @@ import asyncio
 import os
 import pathlib
 
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import pandas as pd
 from astropy.time import Time
 from lsst.ts.criopy import M1M3FATable
@@ -71,7 +71,7 @@ class AccelerationAndVelocities:
         return elevations, azimuths
 
     async def find_applicable_times(
-        self, df_moving: pd.DataFrame, df_notmoving: pd.DataFrame
+        self, df_moving: pd.DataFrame, df_notmoving: pd.DataFrame | None
     ) -> pd.DataFrame:
         """Find start and end times when only one axis moved."""
         ret = []
@@ -83,22 +83,37 @@ class AccelerationAndVelocities:
         ].iterrows():
             end = index - row["timediff"]
             if start is not None and (end - start) > 0.5:
-                ret.append([start, end, len(df_notmoving[start:end].index) == 0])
+                ret.append(
+                    [
+                        start,
+                        end,
+                        True
+                        if df_notmoving is None
+                        else len(df_notmoving[start:end].index) == 0,
+                    ]
+                )
             start = index
 
         return pd.DataFrame(ret, columns=["start", "end", "use"])
 
-    async def load_hardpoints(self, start_time: Time, end_time: Time) -> pd.DataFrame:
-        print(f"Retrieving HP data for {start_time} - {end_time}..", end="")
+    async def load_hardpoints(
+        self, start_time: Time, end_time: Time
+    ) -> None | pd.DataFrame:
+        start = Time(start_time, format="unix_tai")
+        end = Time(end_time, format="unix_tai")
+        print(f"Retrieving HP data for {start.isot} - {end.isot}..", end="")
         ret = await self.client.select_time_series(
             "lsst.sal.MTM1M3.hardpointActuatorData",
             ["timestamp"]
             + [f"measuredForce{hp}" for hp in range(6)]
             + [f"f{a}" for a in "xyz"]
             + [f"m{a}" for a in "xyz"],
-            Time(start_time, format="unix_tai"),
-            Time(end_time, format="unix_tai"),
+            start,
+            end,
         )
+        if ret.empty:
+            print("empty, ignored")
+            return None
         ret.set_index("timestamp", inplace=True)
         print("OK")
         return ret
@@ -135,32 +150,44 @@ class AccelerationAndVelocities:
         self._plot = plot
 
         elevations, azimuths = await self.find_non_zero(start_time, end_time)
-        intervals = await self.find_applicable_times(elevations, azimuths)
+        intervals = await self.find_applicable_times(elevations, None)  # azimuths)
+
+        elevations.rename(columns=lambda n: f"elevation_{n}", inplace=True)
+        azimuths.rename(columns=lambda n: f"azimuth_{n}", inplace=True)
+
         fit = pd.DataFrame()
         for index, row in intervals[intervals.use].iterrows():
-            block_start = row["start"] - 2
-            block_end = row["end"] + 2
+            block_start = row["start"]
+            block_end = row["end"]
             hardpoints = await self.load_hardpoints(block_start, block_end)
+            if hardpoints is None:
+                continue
             elevations_hardpoints = elevations[
                 (elevations.index >= block_start) & (elevations.index <= block_end)
             ]
-            fit = pd.concat(
-                [
-                    fit,
-                    pd.merge(
-                        elevations_hardpoints,
-                        hardpoints,
-                        how="outer",
-                        left_index=True,
-                        right_index=True,
-                    ),
-                ]
+            # data = pd.merge(
+            #    elevations_hardpoints,
+            #    hardpoints,
+            #    how="outer",
+            #    left_index=True,
+            #    right_index=True,
+            # )
+
+            azimuths_hardpoints = azimuths[
+                (azimuths.index >= block_start) & (azimuths.index <= block_end)
+            ]
+            data = hardpoints.join(
+                [azimuths_hardpoints, elevations_hardpoints], how="outer", sort=True
             )
+
+            fit = pd.concat([fit, data])
+
         print("Hardpoint data retrieved")
         print(elevations_hardpoints.describe())
         print(fit)
         fit.to_hdf("raw.hd5", "raw")
-        fit = fit.interpolate()  # method="time")
+        fit = fit.interpolate(method="linear")  # polynomial", order=5)
+        fit = fit[fit.index.to_series().diff() < 1]
         print(fit.describe())
         print(fit)
         mirror = self.mirror_forces(fit)
