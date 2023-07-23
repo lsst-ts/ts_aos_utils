@@ -24,6 +24,8 @@ import asyncio
 import os
 import pathlib
 
+import numpy as np
+
 # import matplotlib.pyplot as plt
 import pandas as pd
 from astropy.time import Time
@@ -31,6 +33,10 @@ from lsst.ts.criopy import M1M3FATable
 from lsst.ts.criopy.m1m3 import ForceCalculator
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
+
+# from numpy.linalg import lstsq
+
+
 
 
 class AccelerationAndVelocities:
@@ -48,7 +54,7 @@ class AccelerationAndVelocities:
 
         async def find_axis(axis: str) -> pd.DataFrame:
             query = (
-                "SELECT timestamp, actualVelocity, demandVelocity "
+                "SELECT timestamp, demandPosition, actualPosition, actualVelocity, demandVelocity "
                 f'FROM "efd"."autogen"."lsst.sal.MTMount.{axis}" '
                 f"WHERE time > '{start_time.isot}+00:00' AND time < '{end_time.isot}+00:00' "
                 f"AND ((abs(actualVelocity) > {self.actual_velocity_limit:f}) or "
@@ -165,13 +171,6 @@ class AccelerationAndVelocities:
             elevations_hardpoints = elevations[
                 (elevations.index >= block_start) & (elevations.index <= block_end)
             ]
-            # data = pd.merge(
-            #    elevations_hardpoints,
-            #    hardpoints,
-            #    how="outer",
-            #    left_index=True,
-            #    right_index=True,
-            # )
 
             azimuths_hardpoints = azimuths[
                 (azimuths.index >= block_start) & (azimuths.index <= block_end)
@@ -182,17 +181,67 @@ class AccelerationAndVelocities:
 
             fit = pd.concat([fit, data])
 
+        fit.iloc[0].fillna(0, inplace=True)
+        fit.iloc[-1].fillna(0, inplace=True)
+
         print("Hardpoint data retrieved")
         print(elevations_hardpoints.describe())
         print(fit)
         fit.to_hdf("raw.hd5", "raw")
-        fit = fit.interpolate(method="linear")  # polynomial", order=5)
+        fit = fit.interpolate(method="index")  # polynomial", order=5)
         fit = fit[fit.index.to_series().diff() < 1]
         print(fit.describe())
         print(fit)
         mirror = self.mirror_forces(fit)
         mirror.to_hdf("fit.hd5", "fit")
         print(mirror)
+
+        # prepare for fit A @ x = B
+        pos = "demand"  # or "actual"
+        el_sin = np.sin(np.radians(fit[f"elevation_{pos}Position"]))
+        el_cos = np.cos(np.radians(fit[f"elevation_{pos}Position"]))
+
+        V_x = fit[f"elevation_{pos}Velocity"]
+        V_y = fit[f"azimuth_{pos}Velocity"].mul(el_cos)
+        V_z = fit[f"azimuth_{pos}Velocity"].mul(el_sin)
+
+        A_x = fit[f"elevation_{pos}Acceleration"]
+        A_y = fit[f"azimuth_{pos}Acceleration"].mul(el_cos)
+        A_z = fit[f"azimuth_{pos}Acceleration"].mul(el_sin)
+
+        A = pd.DataFrame(
+            {
+                "V_x2": V_x.pow(2),
+                "V_y2": V_y.pow(2),
+                "V_z2": V_z.pow(2),
+                "V_xz": V_x.mul(V_z),
+                "V_yz": V_y.mul(V_z),
+                "A_x": A_x,
+                "A_y": A_y,
+                "A_z": A_z,
+            }
+        )
+
+        A.fillna(0, inplace=True)
+
+        A.to_hdf("A.hd5", "A")
+
+        ret = []
+        res = []
+
+        for fa in tqdm(
+            [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
+            + [f"Y{y}" for y in range(M1M3FATable.FATABLE_YFA)]
+            + [f"Z{z}" for z in range(M1M3FATable.FATABLE_ZFA)],
+            desc="Fitting FAs",
+        ):
+            B = mirror[fa] * -1000.0
+            x, residuals, rank, s = np.linalg.lstsq(A, B, rcond=None)
+            ret.append(x)
+            res.append(residuals)
+
+        print(ret)
+
         # plt.plot(fit["demandVelocity"], fit["my"], ".")
         # plt.plot(fit["demandAcceleration"], fit["my"], ".")
         # plt.show()
