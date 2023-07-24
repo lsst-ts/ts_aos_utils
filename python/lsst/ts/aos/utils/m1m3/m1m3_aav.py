@@ -31,12 +31,11 @@ import pandas as pd
 from astropy.time import Time
 from lsst.ts.criopy import M1M3FATable
 from lsst.ts.criopy.m1m3 import ForceCalculator
+from lsst.ts.idl.enums.MTM1M3 import DetailedState
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
 
 # from numpy.linalg import lstsq
-
-
 
 
 class AccelerationAndVelocities:
@@ -46,6 +45,54 @@ class AccelerationAndVelocities:
 
         self.actual_velocity_limit = 0.01
         self.demand_velocity_limit = 1e-5
+        self.detailed_states: pd.DataFrame | None = None
+
+    async def load_detailed_state(
+        self, start_time: Time, end_time: Time
+    ) -> pd.DataFrame:
+        # find last state before start_time
+        print(f"Retrieve last detailedState before {start_time.isot}..", end="")
+        query = (
+            "SELECT detailedState "
+            'FROM "efd"."autogen"."lsst.sal.MTM1M3.logevent_detailedState" '
+            f"WHERE time <= '{start_time.isot}+00:00' ORDER BY time DESC LIMIT 1"
+        )
+        ret = await self.client.influx_client.query(query)
+        print(ret.index.to_series()[0], ret["detailedState"])
+        detailed_states = await self.client.select_time_series(
+            "lsst.sal.MTM1M3.logevent_detailedState",
+            "detailedState",
+            start_time,
+            end_time,
+        )
+        self.detailed_states = pd.concat([ret, detailed_states])
+
+    def was_raised(self, start: Time, end: Time) -> bool:
+        last_state = self.detailed_states[Time(self.detailed_states.index) < start][
+            "detailedState"
+        ].iloc[-1]
+        if DetailedState(last_state) not in (
+            DetailedState.ACTIVE,
+            DetailedState.ACTIVEENGINEERING,
+        ):
+            return False
+        states = self.detailed_states[
+            (Time(self.detailed_states.index) >= start)
+            & (Time(self.detailed_states.index) <= end)
+        ]
+        return (
+            len(
+                states[
+                    ~states.detailedState.isin(
+                        [
+                            DetailedState.ACTIVE,
+                            DetailedState.ACTIVEENGINEERING,
+                        ]
+                    )
+                ].index
+            )
+            == 0
+        )
 
     async def find_non_zero(
         self, start_time: Time, end_time: Time
@@ -89,15 +136,23 @@ class AccelerationAndVelocities:
         ].iterrows():
             end = index - row["timediff"]
             if start is not None and (end - start) > 0.5:
-                ret.append(
-                    [
-                        start,
-                        end,
-                        True
-                        if df_notmoving is None
-                        else len(df_notmoving[start:end].index) == 0,
-                    ]
-                )
+                start_t = Time(start, format="unix_tai")
+                end_t = Time(end, format="unix_tai")
+                if self.was_raised(start_t, end_t):
+                    ret.append(
+                        [
+                            start,
+                            end,
+                            True
+                            if df_notmoving is None
+                            else len(df_notmoving[start:end].index) == 0,
+                        ]
+                    )
+                else:
+                    print(
+                        f"Interval {start_t.isot} - {end_t.isot} "
+                        "mirror was not raised, ignoring."
+                    )
             start = index
 
         return pd.DataFrame(ret, columns=["start", "end", "use"])
@@ -154,6 +209,8 @@ class AccelerationAndVelocities:
     async def fit_aav(self, start_time: Time, end_time: Time, plot: bool) -> None:
         self.client = EfdClient(self.efd_name)
         self._plot = plot
+
+        await self.load_detailed_state(start_time, end_time)
 
         elevations, azimuths = await self.find_non_zero(start_time, end_time)
         intervals = await self.find_applicable_times(elevations, None)  # azimuths)
