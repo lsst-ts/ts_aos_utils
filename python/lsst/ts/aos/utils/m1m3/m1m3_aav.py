@@ -283,8 +283,8 @@ class AccelerationAndVelocities:
 
         A.to_hdf("A.hd5", "A")
 
-        ret = []
-        res = []
+        ret = {}
+        res = {}
 
         for fa in tqdm(
             [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
@@ -294,10 +294,19 @@ class AccelerationAndVelocities:
         ):
             B = mirror[fa] * -1000.0
             x, residuals, rank, s = np.linalg.lstsq(A, B, rcond=None)
-            ret.append(x)
-            res.append(residuals)
+            ret[fa] = x
+            res[fa] = residuals
 
-        print(ret)
+        ret = pd.DataFrame(ret)
+        res = pd.DataFrame(res)
+        ret.to_hdf("new.hd5", "new_values")
+        res.to_hdf("residuals.hd5", "residuals")
+
+        self.force_calculator.update_acceleration_and_velocity(ret)
+
+        save_to = pathlib.Path("new")
+        os.makedirs(save_to)
+        self.force_calculator.save(pathlib.Path("new"))
 
         # plt.plot(fit["demandVelocity"], fit["my"], ".")
         # plt.plot(fit["demandAcceleration"], fit["my"], ".")
