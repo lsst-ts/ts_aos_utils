@@ -19,23 +19,21 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+__all__ = ["AccelerationAndVelocities"]
+
 import argparse
 import asyncio
 import os
 import pathlib
 
-import numpy as np
-
 # import matplotlib.pyplot as plt
 import pandas as pd
 from astropy.time import Time
 from lsst.ts.criopy import M1M3FATable
-from lsst.ts.criopy.m1m3 import ForceCalculator
+from lsst.ts.criopy.m1m3 import AccelerationAndVelocitiesFitter, ForceCalculator
 from lsst.ts.idl.enums.MTM1M3 import DetailedState
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
-
-# from numpy.linalg import lstsq
 
 
 class AccelerationAndVelocities:
@@ -103,12 +101,28 @@ class AccelerationAndVelocities:
             query = (
                 "SELECT timestamp, demandPosition, actualPosition, actualVelocity, demandVelocity "
                 f'FROM "efd"."autogen"."lsst.sal.MTMount.{axis}" '
-                f"WHERE time > '{start_time.isot}+00:00' AND time < '{end_time.isot}+00:00' "
-                f"AND ((abs(actualVelocity) > {self.actual_velocity_limit:f}) or "
+                f"WHERE time > '{start_time.isot}+00:00' AND time < '{end_time.isot}+00:00'"
+            )
+
+            query_non_zero = (
+                query
+                + f" AND ((abs(actualVelocity) > {self.actual_velocity_limit:f}) or "
                 f"(abs(demandVelocity) > {self.demand_velocity_limit:f}))"
             )
-            print("Querying EFD:", query)
-            ret = await self.client.influx_client.query(query)
+            print("Querying EFD:", query_non_zero)
+            ret = await self.client.influx_client.query(query_non_zero)
+            # empty response - probably an interval with 0 velocities. Get it
+            # out anyway
+
+            if isinstance(ret, dict):
+                print("Empty response, quering now", query)
+                ret = await self.client.influx_client.query(query)
+                if isinstance(ret, dict):
+                    raise RuntimeError(
+                        f"Cannot retrieve data for MTMount {axis} axis from "
+                        f"{start_time.isot} to {end_time.isot}."
+                    )
+
             ret.set_index("timestamp", inplace=True)
             ret["timediff"] = ret.index.to_series().diff()
 
@@ -131,6 +145,7 @@ class AccelerationAndVelocities:
 
         start = None
         end = None
+        print(df_moving[(df_moving.timediff > 1) | (df_moving.timediff is None)])
         for index, row in df_moving[
             (df_moving.timediff > 1) | (df_moving.timediff is None)
         ].iterrows():
@@ -155,13 +170,16 @@ class AccelerationAndVelocities:
                     )
             start = index
 
+        if len(ret) == 0:
+            ret = [[df_moving.index[0], df_moving.index[-1], True]]
+
         return pd.DataFrame(ret, columns=["start", "end", "use"])
 
     async def load_hardpoints(
         self, start_time: Time, end_time: Time
     ) -> None | pd.DataFrame:
-        start = Time(start_time, format="unix_tai")
-        end = Time(end_time, format="unix_tai")
+        start = Time(start_time, format="unix_tai", scale="utc")
+        end = Time(end_time, format="unix_tai", scale="utc")
         print(f"Retrieving HP data for {start.isot} - {end.isot}..", end="")
         ret = await self.client.select_time_series(
             "lsst.sal.MTM1M3.hardpointActuatorData",
@@ -206,7 +224,9 @@ class AccelerationAndVelocities:
 
         return fit.merge(df, how="left", left_index=True, right_index=True)
 
-    async def fit_aav(self, start_time: Time, end_time: Time, plot: bool) -> None:
+    async def fit_aav(
+        self, start_time: Time, end_time: Time, set_new: bool, plot: bool
+    ) -> None:
         self.client = EfdClient(self.efd_name)
         self._plot = plot
 
@@ -238,11 +258,15 @@ class AccelerationAndVelocities:
 
             fit = pd.concat([fit, data])
 
-        fit.iloc[0].fillna(0, inplace=True)
-        fit.iloc[-1].fillna(0, inplace=True)
+        fit.iloc[:, 0].fillna(0, inplace=True)
+        fit.iloc[:, -1].fillna(0, inplace=True)
 
         print("Hardpoint data retrieved")
-        print(elevations_hardpoints.describe())
+        print(fit.describe())
+        print(fit["elevation_demandVelocity"].describe())
+        print(fit["elevation_actualVelocity"].describe())
+        print(fit["elevation_demandAcceleration"].describe())
+        print(fit["elevation_actualAcceleration"].describe())
         print(fit)
         fit.to_hdf("raw.hd5", "raw")
         fit = fit.interpolate(method="index")  # polynomial", order=5)
@@ -254,58 +278,28 @@ class AccelerationAndVelocities:
         print(mirror)
 
         # prepare for fit A @ x = B
-        pos = "demand"  # or "actual"
-        el_sin = np.sin(np.radians(fit[f"elevation_{pos}Position"]))
-        el_cos = np.cos(np.radians(fit[f"elevation_{pos}Position"]))
+        fitter = AccelerationAndVelocitiesFitter(fit, "actual")
+        fitter.aav.to_hdf("A.hd5", "A")
 
-        V_x = fit[f"elevation_{pos}Velocity"]
-        V_y = fit[f"azimuth_{pos}Velocity"].mul(el_cos)
-        V_z = fit[f"azimuth_{pos}Velocity"].mul(el_sin)
+        coefficients, residuals = fitter.do_fit(mirror)
 
-        A_x = fit[f"elevation_{pos}Acceleration"]
-        A_y = fit[f"azimuth_{pos}Acceleration"].mul(el_cos)
-        A_z = fit[f"azimuth_{pos}Acceleration"].mul(el_sin)
+        coefficients.to_hdf("new.hd5", "new_values")
+        residuals.to_hdf("residuals.hd5", "residuals")
 
-        A = pd.DataFrame(
-            {
-                "V_x2": V_x.pow(2),
-                "V_y2": V_y.pow(2),
-                "V_z2": V_z.pow(2),
-                "V_xz": V_x.mul(V_z),
-                "V_yz": V_y.mul(V_z),
-                "A_x": A_x,
-                "A_y": A_y,
-                "A_z": A_z,
-            }
-        )
+        if set_new:
+            self.force_calculator.update_acceleration_and_velocity(coefficients)
+        else:
+            self.force_calculator.update_acceleration_and_velocity(coefficients)
 
-        A.fillna(0, inplace=True)
-
-        A.to_hdf("A.hd5", "A")
-
-        ret = {}
-        res = {}
-
-        for fa in tqdm(
-            [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
-            + [f"Y{y}" for y in range(M1M3FATable.FATABLE_YFA)]
-            + [f"Z{z}" for z in range(M1M3FATable.FATABLE_ZFA)],
-            desc="Fitting FAs",
-        ):
-            B = mirror[fa] * -1000.0
-            x, residuals, rank, s = np.linalg.lstsq(A, B, rcond=None)
-            ret[fa] = x
-            res[fa] = residuals
-
-        ret = pd.DataFrame(ret)
-        res = pd.DataFrame(res)
-        ret.to_hdf("new.hd5", "new_values")
-        res.to_hdf("residuals.hd5", "residuals")
-
-        self.force_calculator.update_acceleration_and_velocity(ret)
+        print(coefficients.describe())
+        print(residuals.describe())
 
         save_to = pathlib.Path("new")
-        os.makedirs(save_to)
+        try:
+            os.makedirs(save_to)
+        except FileExistsError:
+            pass
+
         self.force_calculator.save(pathlib.Path("new"))
 
         # plt.plot(fit["demandVelocity"], fit["my"], ".")
@@ -350,6 +344,13 @@ def parse_arguments() -> argparse.Namespace:
         default=pathlib.Path(os.environ["TS_CONFIG_MTTCS_DIR"]) / "MTM1M3" / "v1",
         help="M1M3 configuration directory",
     )
+    parser.add_argument(
+        "--set-new",
+        default=False,
+        action="store_true",
+        help="Don't add to existing forces, assuming acceleration and velocity "
+        "forces were disabled when acquiring data",
+    )
 
     return parser.parse_args()
 
@@ -358,7 +359,7 @@ async def run_loop() -> None:
     args = parse_arguments()
 
     aav = AccelerationAndVelocities(args.efd, args.config)
-    await aav.fit_aav(args.start_time, args.end_time, args.plot)
+    await aav.fit_aav(args.start_time, args.end_time, args.set_new, args.plot)
 
 
 def run() -> None:
