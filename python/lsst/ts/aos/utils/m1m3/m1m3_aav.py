@@ -42,7 +42,7 @@ class AccelerationAndVelocities:
         self.force_calculator = ForceCalculator(config)
 
         self.actual_velocity_limit = 0.01
-        self.demand_velocity_limit = 1e-5
+        self.demand_velocity_limit = 0.01
         self.detailed_states: pd.DataFrame | None = None
 
     async def load_detailed_state(
@@ -138,42 +138,57 @@ class AccelerationAndVelocities:
         return elevations, azimuths
 
     async def find_applicable_times(
-        self, df_moving: pd.DataFrame, df_notmoving: pd.DataFrame | None
+        self, elevations: pd.DataFrame, azimuths: pd.DataFrame | None
     ) -> pd.DataFrame:
         """Find start and end times when only one axis moved."""
         ret = []
 
-        start = None
-        end = None
-        print(df_moving[(df_moving.timediff > 1) | (df_moving.timediff is None)])
-        for index, row in df_moving[
-            (df_moving.timediff > 1) | (df_moving.timediff is None)
-        ].iterrows():
-            end = index - row["timediff"]
-            if start is not None and (end - start) > 0.5:
-                start_t = Time(start, format="unix_tai")
-                end_t = Time(end, format="unix_tai")
-                if self.was_raised(start_t, end_t):
-                    ret.append(
-                        [
-                            start,
-                            end,
-                            True
-                            if df_notmoving is None
-                            else len(df_notmoving[start:end].index) == 0,
-                        ]
-                    )
-                else:
-                    print(
-                        f"Interval {start_t.isot} - {end_t.isot} "
-                        "mirror was not raised, ignoring."
-                    )
-            start = index
+        def find_axis(axis: pd.DataFrame) -> list[list[float, float, bool]]:
+            axis_ret = []
+            start = None
+            end = None
+            for index, row in axis[
+                (axis.timediff > 1) | (axis.timediff is None)
+            ].iterrows():
+                end = index - row["timediff"]
+                if start is not None and (end - start) > 0.5:
+                    start_t = Time(start, format="unix_tai")
+                    end_t = Time(end, format="unix_tai")
+                    if self.was_raised(start_t, end_t):
+                        axis_ret.append(
+                            [
+                                start,
+                                end,
+                                True,
+                            ]
+                            #    if df_notmoving is None
+                            #    else len(df_notmoving[start:end].index) == 0,
+                        )
+                    else:
+                        print(
+                            f"Interval {start_t.isot} - {end_t.isot} "
+                            "mirror was not raised, ignoring."
+                        )
+                start = index
+
+            return axis_ret
+
+        ret = find_axis(elevations) + find_axis(azimuths)
+        print(ret)
 
         if len(ret) == 0:
-            ret = [[df_moving.index[0], df_moving.index[-1], True]]
+            ret = [
+                [
+                    min(elevations.index[0], azimuths.index[0]),
+                    max(elevations.index[-1], elevations.index[-1]),
+                    True,
+                ]
+            ]
 
-        return pd.DataFrame(ret, columns=["start", "end", "use"])
+        data = pd.DataFrame(ret, columns=["start", "end", "use"])
+        data.index = data["start"]
+        data.sort_index(inplace=True)
+        return data
 
     async def load_hardpoints(
         self, start_time: Time, end_time: Time
@@ -225,7 +240,12 @@ class AccelerationAndVelocities:
         return fit.merge(df, how="left", left_index=True, right_index=True)
 
     async def fit_aav(
-        self, start_time: Time, end_time: Time, set_new: bool, plot: bool
+        self,
+        start_time: Time,
+        end_time: Time,
+        set_new: bool,
+        plot: bool,
+        acceleration_avoidance: float,
     ) -> None:
         self.client = EfdClient(self.efd_name)
         self._plot = plot
@@ -233,7 +253,8 @@ class AccelerationAndVelocities:
         await self.load_detailed_state(start_time, end_time)
 
         elevations, azimuths = await self.find_non_zero(start_time, end_time)
-        intervals = await self.find_applicable_times(elevations, None)  # azimuths)
+        intervals = await self.find_applicable_times(elevations, azimuths)
+        print(intervals)
 
         elevations.rename(columns=lambda n: f"elevation_{n}", inplace=True)
         azimuths.rename(columns=lambda n: f"azimuth_{n}", inplace=True)
@@ -263,13 +284,23 @@ class AccelerationAndVelocities:
 
         print("Hardpoint data retrieved")
         print(fit.describe())
+        print(fit["elevation_demandPosition"].describe())
+        print(fit["elevation_actualPosition"].describe())
         print(fit["elevation_demandVelocity"].describe())
         print(fit["elevation_actualVelocity"].describe())
         print(fit["elevation_demandAcceleration"].describe())
         print(fit["elevation_actualAcceleration"].describe())
+
+        print(fit["azimuth_demandPosition"].describe())
+        print(fit["azimuth_actualPosition"].describe())
+        print(fit["azimuth_demandVelocity"].describe())
+        print(fit["azimuth_actualVelocity"].describe())
+        print(fit["azimuth_demandAcceleration"].describe())
+        print(fit["azimuth_actualAcceleration"].describe())
+
         print(fit)
         fit.to_hdf("raw.hd5", "raw")
-        fit = fit.interpolate(method="index")  # polynomial", order=5)
+        fit = fit.interpolate(method="index")
         fit = fit[fit.index.to_series().diff() < 1]
         print(fit.describe())
         print(fit)
@@ -278,10 +309,10 @@ class AccelerationAndVelocities:
         print(mirror)
 
         # prepare for fit A @ x = B
-        fitter = AccelerationAndVelocitiesFitter(fit, "actual")
+        fitter = AccelerationAndVelocitiesFitter(mirror, "actual")
         fitter.aav.to_hdf("A.hd5", "A")
 
-        coefficients, residuals = fitter.do_fit(mirror)
+        coefficients, residuals = fitter.do_fit(mirror)  # , acceleration_avoidance)
 
         coefficients.to_hdf("new.hd5", "new_values")
         residuals.to_hdf("residuals.hd5", "residuals")
@@ -351,6 +382,15 @@ def parse_arguments() -> argparse.Namespace:
         help="Don't add to existing forces, assuming acceleration and velocity "
         "forces were disabled when acquiring data",
     )
+    parser.add_argument(
+        "--acceleration-avoidance",
+        type=float,
+        default=1,
+        help="Region to consider for velocity fitting. Defaults to 1 second - "
+        "data <acceleration-avoidance> second(s) after demand acceleration dropped to 0 till "
+        "<acceleration-avoidance> seconds before acceleration increased again "
+        "from 0, shall be used for velocity fits",
+    )
 
     return parser.parse_args()
 
@@ -359,7 +399,13 @@ async def run_loop() -> None:
     args = parse_arguments()
 
     aav = AccelerationAndVelocities(args.efd, args.config)
-    await aav.fit_aav(args.start_time, args.end_time, args.set_new, args.plot)
+    await aav.fit_aav(
+        args.start_time,
+        args.end_time,
+        args.set_new,
+        args.plot,
+        args.acceleration_avoidance,
+    )
 
 
 def run() -> None:
