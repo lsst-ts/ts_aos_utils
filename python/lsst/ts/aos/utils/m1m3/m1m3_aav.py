@@ -26,6 +26,8 @@ import asyncio
 import os
 import pathlib
 
+import numpy as np
+
 # import matplotlib.pyplot as plt
 import pandas as pd
 from astropy.time import Time
@@ -56,7 +58,6 @@ class AccelerationAndVelocities:
             f"WHERE time <= '{start_time.isot}+00:00' ORDER BY time DESC LIMIT 1"
         )
         ret = await self.client.influx_client.query(query)
-        print(ret.index.to_series()[0], ret["detailedState"])
         detailed_states = await self.client.select_time_series(
             "lsst.sal.MTM1M3.logevent_detailedState",
             "detailedState",
@@ -64,11 +65,14 @@ class AccelerationAndVelocities:
             end_time,
         )
         self.detailed_states = pd.concat([ret, detailed_states])
+        self.detailed_states.set_index(
+            pd.DatetimeIndex(self.detailed_states.index), inplace=True
+        )
 
-    def was_raised(self, start: Time, end: Time) -> bool:
-        last_state = self.detailed_states[Time(self.detailed_states.index) < start][
-            "detailedState"
-        ].iloc[-1]
+    def was_raised(self, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+        last_state = self.detailed_states[
+            self.detailed_states.index < pd.to_datetime(start, utc=True)
+        ]["detailedState"].iloc[-1]
         if DetailedState(last_state) not in (
             DetailedState.ACTIVE,
             DetailedState.ACTIVEENGINEERING,
@@ -113,7 +117,6 @@ class AccelerationAndVelocities:
             ret = await self.client.influx_client.query(query_non_zero)
             # empty response - probably an interval with 0 velocities. Get it
             # out anyway
-
             if isinstance(ret, dict):
                 print("Empty response, quering now", query)
                 ret = await self.client.influx_client.query(query)
@@ -123,8 +126,13 @@ class AccelerationAndVelocities:
                         f"{start_time.isot} to {end_time.isot}."
                     )
 
-            ret.set_index("timestamp", inplace=True)
-            ret["timediff"] = ret.index.to_series().diff()
+            ret.set_index(
+                pd.DatetimeIndex(
+                    Time(Time(ret["timestamp"], format="unix_tai"), scale="utc").isot
+                ),
+                inplace=True,
+            )
+            ret["timediff"] = ret["timestamp"].diff()
 
             # calculate derivatives - acceleration
             den = ret["timediff"]
@@ -150,11 +158,9 @@ class AccelerationAndVelocities:
             for index, row in axis[
                 (axis.timediff > 1) | (axis.timediff is None)
             ].iterrows():
-                end = index - row["timediff"]
-                if start is not None and (end - start) > 0.5:
-                    start_t = Time(start, format="unix_tai")
-                    end_t = Time(end, format="unix_tai")
-                    if self.was_raised(start_t, end_t):
+                end = index - pd.Timedelta(seconds=row["timediff"])
+                if start is not None and (end - start) > pd.Timedelta(seconds=0.5):
+                    if self.was_raised(start, end):
                         axis_ret.append(
                             [
                                 start,
@@ -166,7 +172,7 @@ class AccelerationAndVelocities:
                         )
                     else:
                         print(
-                            f"Interval {start_t.isot} - {end_t.isot} "
+                            f"Interval {start.isot} - {end.isot} "
                             "mirror was not raised, ignoring."
                         )
                 start = index
@@ -174,7 +180,6 @@ class AccelerationAndVelocities:
             return axis_ret
 
         ret = find_axis(elevations) + find_axis(azimuths)
-        print(ret)
 
         if len(ret) == 0:
             ret = [
@@ -190,11 +195,36 @@ class AccelerationAndVelocities:
         data.sort_index(inplace=True)
         return data
 
+    def calculate_forces(
+        self, fitter: AccelerationAndVelocitiesFitter, coefficients: pd.DataFrame
+    ) -> pd.DataFrame:
+        results = pd.DataFrame(fitter.aav.values @ coefficients.values) / 1000.0
+
+        def vect_to_fam(row: pd.Series) -> pd.Series:
+            applied = self.force_calculator.get_applied_forces_from_series(row)
+
+            return pd.Series(
+                [
+                    applied.fx,
+                    applied.fy,
+                    applied.fz,
+                    applied.mx,
+                    applied.my,
+                    applied.mz,
+                ],
+                index=[f"calculated_f{a}" for a in "xyz"]
+                + [f"calculated_m{a}" for a in "xyz"],
+            )
+
+        calculated = results.apply(vect_to_fam, axis=1)
+        calculated.set_index(fitter.aav.index, inplace=True)
+        return calculated
+
     async def load_hardpoints(
-        self, start_time: Time, end_time: Time
+        self, start_time: pd.Timestamp, end_time: pd.Timestamp
     ) -> None | pd.DataFrame:
-        start = Time(start_time, format="unix_tai", scale="utc")
-        end = Time(end_time, format="unix_tai", scale="utc")
+        start = Time(start_time)
+        end = Time(end_time)
         print(f"Retrieving HP data for {start.isot} - {end.isot}..", end="")
         ret = await self.client.select_time_series(
             "lsst.sal.MTM1M3.hardpointActuatorData",
@@ -208,7 +238,12 @@ class AccelerationAndVelocities:
         if ret.empty:
             print("empty, ignored")
             return None
-        ret.set_index("timestamp", inplace=True)
+        ret.set_index(
+            pd.DatetimeIndex(
+                Time(Time(ret["timestamp"], format="unix_tai"), scale="utc").isot
+            ),
+            inplace=True,
+        )
         print("OK")
         return ret
 
@@ -269,7 +304,6 @@ class AccelerationAndVelocities:
             elevations_hardpoints = elevations[
                 (elevations.index >= block_start) & (elevations.index <= block_end)
             ]
-
             azimuths_hardpoints = azimuths[
                 (azimuths.index >= block_start) & (azimuths.index <= block_end)
             ]
@@ -300,8 +334,8 @@ class AccelerationAndVelocities:
 
         print(fit)
         fit.to_hdf("raw.hd5", "raw")
-        fit = fit.interpolate(method="index")
-        fit = fit[fit.index.to_series().diff() < 1]
+        fit = fit.interpolate(method="time")
+        fit = fit[fit.index.to_series().diff() < np.timedelta64(1, "s")]
         print(fit.describe())
         print(fit)
         mirror = self.mirror_forces(fit)
@@ -313,17 +347,31 @@ class AccelerationAndVelocities:
         fitter.aav.to_hdf("A.hd5", "A")
 
         coefficients, residuals = fitter.do_fit(mirror)  # , acceleration_avoidance)
+        print("coefficients")
+        print(coefficients)
+        print(coefficients.describe())
 
         coefficients.to_hdf("new.hd5", "new_values")
-        residuals.to_hdf("residuals.hd5", "residuals")
 
         if set_new:
-            self.force_calculator.update_acceleration_and_velocity(coefficients)
+            self.force_calculator.set_acceleration_and_velocity(coefficients)
         else:
             self.force_calculator.update_acceleration_and_velocity(coefficients)
 
         print(coefficients.describe())
-        print(residuals.describe())
+
+        calculated = self.calculate_forces(fitter, coefficients)
+        mirror_res = pd.DataFrame(
+            {
+                "fx": mirror["fx"] - calculated["calculated_fx"],
+                "fy": mirror["fy"] - calculated["calculated_fy"],
+                "fz": mirror["fz"] - calculated["calculated_fz"],
+                "mx": mirror["mx"] - calculated["calculated_mx"],
+                "my": mirror["my"] - calculated["calculated_my"],
+                "mz": mirror["mz"] - calculated["calculated_mz"],
+            }
+        )
+        mirror_res.to_hdf("residuals.hd5", "residuals")
 
         save_to = pathlib.Path("new")
         try:
