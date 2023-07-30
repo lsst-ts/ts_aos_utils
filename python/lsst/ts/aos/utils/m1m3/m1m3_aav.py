@@ -37,6 +37,8 @@ from lsst.ts.idl.enums.MTM1M3 import DetailedState
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
 
+tqdm.pandas()
+
 
 class AccelerationAndVelocities:
     def __init__(self, efd_name: str, config: str):
@@ -226,7 +228,8 @@ class AccelerationAndVelocities:
                 + [f"calculated_m{a}" for a in "xyz"],
             )
 
-        calculated = results.apply(vect_to_fam, axis=1)
+        print("Calculating calculated forces - backpropagation")
+        calculated = results.progress_apply(vect_to_fam, axis=1)
         calculated.set_index(fitter.aav.index, inplace=True)
         return calculated
 
