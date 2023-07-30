@@ -359,7 +359,7 @@ class AccelerationAndVelocities:
         if hd5_debug is not None:
             fitter.aav.to_hdf(hd5_debug, "A")
 
-        coefficients, residuals = fitter.do_fit(mirror)
+        coefficients, fit_residuals = fitter.do_fit(mirror)
         print("coefficients")
         print(coefficients)
         print(coefficients.describe())
@@ -385,9 +385,11 @@ class AccelerationAndVelocities:
                 "mz": mirror["mz"] + calculated["calculated_mz"],
             }
         )
+        mirror_res.rename(columns=lambda n: f"residuals_{n}", inplace=True)
         if hd5_debug is not None:
-            calculated.to_hdf(hd5_debug, "calculated")
-            mirror_res.to_hdf(hd5_debug, "residuals")
+            residuals = mirror
+            residuals = residuals.join([calculated, mirror_res])
+            residuals.to_hdf(hd5_debug, "residuals")
 
         save_to = pathlib.Path("new")
         try:
