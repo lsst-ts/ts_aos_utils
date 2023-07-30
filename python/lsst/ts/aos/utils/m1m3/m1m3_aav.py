@@ -261,31 +261,27 @@ class AccelerationAndVelocities:
         return ret
 
     def mirror_forces(self, fit: pd.DataFrame) -> pd.DataFrame:
-        forces = {}
-        for x in range(M1M3FATable.FATABLE_XFA):
-            forces[f"X{x}"] = []
-        for y in range(M1M3FATable.FATABLE_YFA):
-            forces[f"Y{y}"] = []
-        for z in range(M1M3FATable.FATABLE_ZFA):
-            forces[f"Z{z}"] = []
+        fa_names = (
+            [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
+            + [f"Y{y}" for y in range(M1M3FATable.FATABLE_YFA)]
+            + [f"Z{z}" for z in range(M1M3FATable.FATABLE_ZFA)]
+        )
 
-        for index, row in tqdm(
-            fit.iterrows(), total=fit.shape[0], desc="Calculating mirror forces"
-        ):
-            mirror_forces = self.force_calculator.forces_and_moments_forces(
+        def fa_forces(row: pd.Series) -> pd.Series:
+            forces = self.force_calculator.forces_and_moments_forces(
                 [row["fx"], row["fy"], row["fz"], row["mx"], row["my"], row["mz"]]
             )
-            for x in range(M1M3FATable.FATABLE_XFA):
-                forces[f"X{x}"].append(mirror_forces.xForces[x])
-            for y in range(M1M3FATable.FATABLE_YFA):
-                forces[f"Y{y}"].append(mirror_forces.yForces[y])
-            for z in range(M1M3FATable.FATABLE_ZFA):
-                forces[f"Z{z}"].append(mirror_forces.zForces[z])
+            return pd.Series(
+                np.concatenate((forces.xForces, forces.yForces, forces.zForces)),
+                index=fa_names,
+            )
 
-        df = pd.DataFrame(forces, index=fit.index)
-        print(df)
+        print("Calculating mirror forces")
+        applied = fit.progress_apply(fa_forces, axis=1)
+        applied.set_index(fit.index, inplace=True)
+        print(applied)
 
-        return fit.merge(df, how="left", left_index=True, right_index=True)
+        return fit.merge(applied, how="left", left_index=True, right_index=True)
 
     async def fit_aav(
         self,
