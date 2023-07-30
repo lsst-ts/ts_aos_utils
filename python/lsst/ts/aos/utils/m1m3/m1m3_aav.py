@@ -96,7 +96,7 @@ class AccelerationAndVelocities:
             == 0
         )
 
-    async def find_non_zero(
+    async def find_az_el(
         self, start_time: Time, end_time: Time
     ) -> (pd.DataFrame, pd.DataFrame):
         """Find times when elevations and azimuth MTMount axis moved."""
@@ -108,13 +108,14 @@ class AccelerationAndVelocities:
                 f"WHERE time > '{start_time.isot}+00:00' AND time < '{end_time.isot}+00:00'"
             )
 
-            query_non_zero = (
-                query
-                + f" AND ((abs(actualVelocity) > {self.actual_velocity_limit:f}) or "
-                f"(abs(demandVelocity) > {self.demand_velocity_limit:f}))"
-            )
-            print("Querying EFD:", query_non_zero)
-            ret = await self.client.influx_client.query(query_non_zero)
+            # query_non_zero = (
+            #    query
+            # + f" AND ((abs(actualVelocity) > {self.actual_velocity_limit:f})
+            # or "
+            #   f"(abs(demandVelocity) > {self.demand_velocity_limit:f}))"
+            # )
+            print("Querying EFD:", query)
+            ret = await self.client.influx_client.query(query)
             # empty response - probably an interval with 0 velocities. Get it
             # out anyway
             if isinstance(ret, dict):
@@ -148,51 +149,60 @@ class AccelerationAndVelocities:
     async def find_applicable_times(
         self, elevations: pd.DataFrame, azimuths: pd.DataFrame | None
     ) -> pd.DataFrame:
-        """Find start and end times when only one axis moved."""
+        """Find start and end times of any axis movents."""
         ret = []
 
-        def find_axis(axis: pd.DataFrame) -> list[list[float, float, bool]]:
-            axis_ret = []
-            start = None
-            end = None
-            for index, row in axis[
-                (axis.timediff > 1) | (axis.timediff is None)
-            ].iterrows():
-                end = index - pd.Timedelta(seconds=row["timediff"])
-                if start is not None and (end - start) > pd.Timedelta(seconds=0.5):
-                    if self.was_raised(start, end):
-                        axis_ret.append(
-                            [
-                                start,
-                                end,
-                                True,
-                            ]
-                            #    if df_notmoving is None
-                            #    else len(df_notmoving[start:end].index) == 0,
-                        )
-                    else:
-                        print(
-                            f"Interval {start.isot} - {end.isot} "
-                            "mirror was not raised, ignoring."
-                        )
-                start = index
+        movements = pd.concat(
+            [
+                elevations[
+                    (abs(elevations.actualVelocity) > self.actual_velocity_limit)
+                    | (abs(elevations.demandVelocity) > self.demand_velocity_limit)
+                ],
+                azimuths[
+                    (abs(azimuths.actualVelocity) > self.actual_velocity_limit)
+                    | (abs(azimuths.demandVelocity) > self.demand_velocity_limit)
+                ],
+            ]
+        )
 
-            return axis_ret
+        movements.sort_index(inplace=True)
+        movements["timediff"] = movements.index.to_series().diff()
 
-        ret = find_axis(elevations) + find_axis(azimuths)
+        start = None
+        end = None
+        for index, row in movements[
+            (movements.timediff > np.timedelta64(1, "s")) | (movements.timediff is None)
+        ].iterrows():
+            end = index - row["timediff"]
+            if start is not None and (end - start) > pd.Timedelta(seconds=0.5):
+                if self.was_raised(start, end):
+                    ret.append(
+                        [
+                            start,
+                            end,
+                            True,
+                        ]
+                        #    if df_notmoving is None
+                        #    else len(df_notmoving[start:end].index) == 0,
+                    )
+                else:
+                    print(
+                        f"Interval {start.isot} - {end.isot} "
+                        "mirror was not raised, ignoring."
+                    )
+            start = index
 
         if len(ret) == 0:
             ret = [
                 [
-                    min(elevations.index[0], azimuths.index[0]),
-                    max(elevations.index[-1], elevations.index[-1]),
+                    movements.index[0],
+                    movements.index[-1],
                     True,
                 ]
             ]
 
         data = pd.DataFrame(ret, columns=["start", "end", "use"])
         data.index = data["start"]
-        data.sort_index(inplace=True)
         return data
 
     def calculate_forces(
@@ -280,14 +290,14 @@ class AccelerationAndVelocities:
         end_time: Time,
         set_new: bool,
         plot: bool,
-        acceleration_avoidance: float,
+        hd5_debug: None | str,
     ) -> None:
         self.client = EfdClient(self.efd_name)
         self._plot = plot
 
         await self.load_detailed_state(start_time, end_time)
 
-        elevations, azimuths = await self.find_non_zero(start_time, end_time)
+        elevations, azimuths = await self.find_az_el(start_time, end_time)
         intervals = await self.find_applicable_times(elevations, azimuths)
         print(intervals)
 
@@ -333,25 +343,29 @@ class AccelerationAndVelocities:
         print(fit["azimuth_actualAcceleration"].describe())
 
         print(fit)
-        fit.to_hdf("raw.hd5", "raw")
+        if hd5_debug is not None:
+            fit.to_hdf(hd5_debug, "raw")
         fit = fit.interpolate(method="time")
         fit = fit[fit.index.to_series().diff() < np.timedelta64(1, "s")]
         print(fit.describe())
         print(fit)
         mirror = self.mirror_forces(fit)
-        mirror.to_hdf("fit.hd5", "fit")
+        if hd5_debug is not None:
+            mirror.to_hdf(hd5_debug, "fit")
         print(mirror)
 
         # prepare for fit A @ x = B
         fitter = AccelerationAndVelocitiesFitter(mirror, "actual")
-        fitter.aav.to_hdf("A.hd5", "A")
+        if hd5_debug is not None:
+            fitter.aav.to_hdf(hd5_debug, "A")
 
-        coefficients, residuals = fitter.do_fit(mirror)  # , acceleration_avoidance)
+        coefficients, residuals = fitter.do_fit(mirror)
         print("coefficients")
         print(coefficients)
         print(coefficients.describe())
 
-        coefficients.to_hdf("new.hd5", "new_values")
+        if hd5_debug is not None:
+            coefficients.to_hdf(hd5_debug, "new_values")
 
         if set_new:
             self.force_calculator.set_acceleration_and_velocity(coefficients)
@@ -363,15 +377,17 @@ class AccelerationAndVelocities:
         calculated = self.calculate_forces(fitter, coefficients)
         mirror_res = pd.DataFrame(
             {
-                "fx": mirror["fx"] - calculated["calculated_fx"],
-                "fy": mirror["fy"] - calculated["calculated_fy"],
-                "fz": mirror["fz"] - calculated["calculated_fz"],
-                "mx": mirror["mx"] - calculated["calculated_mx"],
-                "my": mirror["my"] - calculated["calculated_my"],
-                "mz": mirror["mz"] - calculated["calculated_mz"],
+                "fx": mirror["fx"] + calculated["calculated_fx"],
+                "fy": mirror["fy"] + calculated["calculated_fy"],
+                "fz": mirror["fz"] + calculated["calculated_fz"],
+                "mx": mirror["mx"] + calculated["calculated_mx"],
+                "my": mirror["my"] + calculated["calculated_my"],
+                "mz": mirror["mz"] + calculated["calculated_mz"],
             }
         )
-        mirror_res.to_hdf("residuals.hd5", "residuals")
+        if hd5_debug is not None:
+            calculated.to_hdf(hd5_debug, "calculated")
+            mirror_res.to_hdf(hd5_debug, "residuals")
 
         save_to = pathlib.Path("new")
         try:
@@ -431,13 +447,10 @@ def parse_arguments() -> argparse.Namespace:
         "forces were disabled when acquiring data",
     )
     parser.add_argument(
-        "--acceleration-avoidance",
-        type=float,
-        default=1,
-        help="Region to consider for velocity fitting. Defaults to 1 second - "
-        "data <acceleration-avoidance> second(s) after demand acceleration dropped to 0 till "
-        "<acceleration-avoidance> seconds before acceleration increased again "
-        "from 0, shall be used for velocity fits",
+        "--hd5-debug",
+        type=str,
+        default=None,
+        help="save debug outputs as provided HDF5 file.",
     )
 
     return parser.parse_args()
@@ -452,7 +465,7 @@ async def run_loop() -> None:
         args.end_time,
         args.set_new,
         args.plot,
-        args.acceleration_avoidance,
+        args.hd5_debug,
     )
 
 
