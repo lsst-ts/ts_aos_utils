@@ -12,7 +12,8 @@ dynamic = [ "version" ]
 dependencies = [ "astropy", "numpy", "pandas", "scipy", "tqdm" ]
  
 [project.scripts]
-M1M3LUT = "lsst.ts.aos.utils.m1m3.M1M3LUT:run"
+m1m3-aav = "lsst.ts.aos.utils.m1m3.m1m3_aav:run"
+m1m3-lut = "lsst.ts.aos.utils.m1m3.m1m3_lut:run"
 
 [tools.setuptools]
 package-data = { "" = "*.csv"}

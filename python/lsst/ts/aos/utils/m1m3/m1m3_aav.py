@@ -364,14 +364,12 @@ class AccelerationAndVelocities:
         print(coefficients.describe())
 
         if hd5_debug is not None:
-            coefficients.to_hdf(hd5_debug, "new_values")
+            coefficients.to_hdf(hd5_debug, "coefficients")
 
         if set_new:
             self.force_calculator.set_acceleration_and_velocity(coefficients)
         else:
             self.force_calculator.update_acceleration_and_velocity(coefficients)
-
-        print(coefficients.describe())
 
         calculated = self.calculate_forces(fitter, coefficients)
         mirror_res = pd.DataFrame(
