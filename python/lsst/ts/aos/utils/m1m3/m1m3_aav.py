@@ -322,9 +322,6 @@ class AccelerationAndVelocities:
 
             fit = pd.concat([fit, data])
 
-        fit.iloc[:, 0].fillna(0, inplace=True)
-        fit.iloc[:, -1].fillna(0, inplace=True)
-
         print("Hardpoint data retrieved")
         print(fit.describe())
         print(fit["elevation_demandPosition"].describe())
@@ -344,6 +341,7 @@ class AccelerationAndVelocities:
         print(fit)
         if hd5_debug is not None:
             fit.to_hdf(hd5_debug, "raw")
+        fit = fit.sort_index()
         fit = fit.interpolate(method="time")
         fit = fit[fit.index.to_series().diff() < np.timedelta64(1, "s")]
         print(fit.describe())
