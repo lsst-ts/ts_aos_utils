@@ -2,6 +2,11 @@
 Version History
 ===============
 
+v0.2.1
+======
+
+* Add more functions to **DiagnosticsM2** class.
+
 v0.2.0
 ======
 

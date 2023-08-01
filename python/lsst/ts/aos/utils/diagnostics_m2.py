@@ -763,6 +763,48 @@ class DiagnosticsM2:
         idx = (np.abs(timestamps - timestamp)).argmin()
         return values[idx]
 
+    async def get_data_power_status(
+        self,
+        time_start: Time,
+        time_end: Time,
+        realign_time: bool = True,
+    ) -> tuple[DataFrame, numpy.typing.NDArray[np.float64]]:
+        """
+        Query and return the power status data.
+
+        Parameters
+        ----------
+        time_start : `astropy.time.core.Time`
+            Start time.
+        time_end : `astropy.time.core.Time`
+            End time.
+        realign_time : `bool`, optional
+            Realign the timestamp to origin or not (0-based). (the default is
+            True)
+
+        Returns
+        -------
+        data : `pandas.core.frame.DataFrame`
+            Position data.
+        time_operation : `numpy.ndarray`
+            Operation time.
+        """
+
+        data, time_operation = await self._query_data(
+            "powerStatus",
+            [
+                "motorVoltage",
+                "motorCurrent",
+                "commVoltage",
+                "commCurrent",
+                "private_sndStamp",
+            ],
+            time_start,
+            time_end,
+            realign_time,
+        )
+        return data, time_operation
+
     def draw_forces(
         self,
         xy_actuators: numpy.typing.NDArray[np.float64],
