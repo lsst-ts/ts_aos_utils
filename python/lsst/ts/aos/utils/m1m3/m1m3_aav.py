@@ -46,18 +46,23 @@ class AccelerationAndVelocities:
     Attributes
     ----------
     azimuths : pd.DataFrame
-        Mount azimuth. Contains actual and demand Position, Velocity and Acceleration.
+        Mount azimuth. Contains actual and demand Position, Velocity and
+        Acceleration.
+    detailed_states : pd.DataFrame
+        Mirror detailed states before and during selected time interval.
     elevations : pd.DataFrame
-        Mount elevation. Contains actual and demand Position, Velocity and Acceleration.
+        Mount elevation. Contains actual and demand Position, Velocity and
+        Acceleration.
     interpolated : pd.DataFrame
         Interpolated raw data.
     intervals : pd.DataFrame
         Contains start, end and use flag (whenever to use the interval) of
         intervals suitable for fitting.
     mirror : pd.DataFrame
-        Mirror forces. Contains interpolated data, with extra X0..11, Y0..99 and Z0..155 columns - those
-        contain data derived from hardpoint forces (f[xyz], m[xyz]). Those are
-        the per-mirror (XYZ) forces the algorithm needs to counter-act.
+        Mirror forces. Contains interpolated data, with extra X0..11, Y0..99
+        and Z0..155 columns - those contain data derived from hardpoint forces
+        (f[xyz], m[xyz]). Those are the per-mirror (XYZ) forces the algorithm
+        needs to counter-act.
     raw : pd.DataFrame
         Raw data. Concatenation of azimuths, elevations and hardpoint forces.
         Contains null/NaNs, as the three tables are merged together.
@@ -72,15 +77,29 @@ class AccelerationAndVelocities:
         self.detailed_states: pd.DataFrame | None = None
 
         self.azimuths: pd.DataFrame | None = None
+        self.detailed_states: pd.DataFrame | None = None
         self.elevations: pd.DataFrame | None = None
         self.interpolated: pd.DataFrame | None = None
         self.intervals: pd.DataFrame | None = None
         self.mirror: pd.DataFrame | None = None
         self.raw: pd.DataFrame | None = None
 
-    async def load_detailed_state(
-        self, start_time: Time, end_time: Time
-    ) -> pd.DataFrame:
+    async def load_detailed_state(self, start_time: Time, end_time: Time) -> None:
+        """Find detailedState. Last pre-dating start_time, and all in
+        start_time till end_time. Those are primary used to verify mirror
+        wasn't lowered during slew - was either in ACTIVE or ACTIVEENGINEERING
+        detailedState.
+
+        Fills self.detailed_states.
+
+        Parameters
+        ----------
+        start_time: Time
+            Time to look from.
+        end_time: Time
+            Time to look till.
+        """
+
         # find last state before start_time
         print(f"Retrieve last detailedState before {start_time.isot}..", end="")
         query = (
@@ -101,6 +120,23 @@ class AccelerationAndVelocities:
         )
 
     def was_raised(self, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+        """Return whenever mirror ws raised (in either ACTIVE or
+        ACTIVEENGINEERING states) from start till end parameters.
+
+        Parameters
+        ----------
+        start : Time
+            Starting time of interval to query for mirror state.
+        end : Time
+            End time of interval to query for mirror state.
+
+        Returns
+        -------
+        raised : bool
+            True if mirror was raised (in ACTIVE or ACTIVEENGINEERING
+            detailedState) from start till end.
+        """
+        assert self.detailed_states is not None
         last_state = self.detailed_states[
             self.detailed_states.index < pd.to_datetime(start, utc=True)
         ]["detailedState"].iloc[-1]
@@ -127,35 +163,34 @@ class AccelerationAndVelocities:
             == 0
         )
 
-    async def find_az_el(self, start_time: Time, end_time: Time) -> None:
+    async def find_az_el(self, start: Time, end: Time) -> None:
         """Find times when elevations and azimuth MTMount axis moved. Store
-        elevations and azimuth to elevations and azimuths attributes."""
+        elevations and azimuth to elevations and azimuths attributes.
+
+        Parameters
+        ----------
+        start : Time
+            Start time. Azimuths and elevations data will be available from
+            that time.
+        end : Time
+            End time. Azimuths and elevations data will be available till that
+            time.
+        """
 
         async def find_axis(axis: str) -> pd.DataFrame:
-            query = (
-                "SELECT timestamp, demandPosition, actualPosition, actualVelocity, demandVelocity "
-                f'FROM "efd"."autogen"."lsst.sal.MTMount.{axis}" '
-                f"WHERE time > '{start_time.isot}+00:00' AND time < '{end_time.isot}+00:00'"
+            print("Querying EFD")
+            ret = await self.client.select_time_series(
+                f"lsst.sal.MTMount.{axis}",
+                [
+                    "timestamp",
+                    "demandPosition",
+                    "actualPosition",
+                    "demandVelocity",
+                    "actualVelocity",
+                ],
+                start,
+                end,
             )
-
-            # query_non_zero = (
-            #    query
-            # + f" AND ((abs(actualVelocity) > {self.actual_velocity_limit:f})
-            # or "
-            #   f"(abs(demandVelocity) > {self.demand_velocity_limit:f}))"
-            # )
-            print("Querying EFD:", query)
-            ret = await self.client.influx_client.query(query)
-            # empty response - probably an interval with 0 velocities. Get it
-            # out anyway
-            if isinstance(ret, dict):
-                print("Empty response, quering now", query)
-                ret = await self.client.influx_client.query(query)
-                if isinstance(ret, dict):
-                    raise RuntimeError(
-                        f"Cannot retrieve data for MTMount {axis} axis from "
-                        f"{start_time.isot} to {end_time.isot}."
-                    )
 
             ret.set_index(
                 pd.DatetimeIndex(
