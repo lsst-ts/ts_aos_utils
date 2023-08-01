@@ -148,21 +148,19 @@ class AccelerationAndVelocities:
 
         return elevations, azimuths
 
-    async def find_applicable_times(
-        self, elevations: pd.DataFrame, azimuths: pd.DataFrame | None
-    ) -> pd.DataFrame:
+    async def find_applicable_times(self) -> pd.DataFrame:
         """Find start and end times of any axis movents."""
         ret = []
 
         movements = pd.concat(
             [
-                elevations[
-                    (abs(elevations.actualVelocity) > self.actual_velocity_limit)
-                    | (abs(elevations.demandVelocity) > self.demand_velocity_limit)
+                self.elevations[
+                    (abs(self.elevations.actualVelocity) > self.actual_velocity_limit)
+                    | (abs(self.elevations.demandVelocity) > self.demand_velocity_limit)
                 ],
-                azimuths[
-                    (abs(azimuths.actualVelocity) > self.actual_velocity_limit)
-                    | (abs(azimuths.demandVelocity) > self.demand_velocity_limit)
+                self.azimuths[
+                    (abs(self.azimuths.actualVelocity) > self.actual_velocity_limit)
+                    | (abs(self.azimuths.demandVelocity) > self.demand_velocity_limit)
                 ],
             ]
         )
@@ -283,6 +281,28 @@ class AccelerationAndVelocities:
 
         return fit.merge(applied, how="left", left_index=True, right_index=True)
 
+    async def collect_hardpoint_data(self) -> None:
+        self.fit = pd.DataFrame()
+        for index, row in self.intervals[self.intervals.use].iterrows():
+            block_start = row["start"]
+            block_end = row["end"]
+            hardpoints = await self.load_hardpoints(block_start, block_end)
+            if hardpoints is None:
+                continue
+            elevations_hardpoints = self.elevations[
+                (self.elevations.index >= block_start)
+                & (self.elevations.index <= block_end)
+            ]
+            azimuths_hardpoints = self.azimuths[
+                (self.azimuths.index >= block_start)
+                & (self.azimuths.index <= block_end)
+            ]
+            data = hardpoints.join(
+                [azimuths_hardpoints, elevations_hardpoints], how="outer", sort=True
+            )
+
+            self.fit = pd.concat([self.fit, data])
+
     async def fit_aav(
         self,
         start_time: Time,
@@ -296,95 +316,79 @@ class AccelerationAndVelocities:
 
         await self.load_detailed_state(start_time, end_time)
 
-        elevations, azimuths = await self.find_az_el(start_time, end_time)
-        intervals = await self.find_applicable_times(elevations, azimuths)
-        print(intervals)
+        self.elevations, self.azimuths = await self.find_az_el(start_time, end_time)
+        self.intervals = await self.find_applicable_times()
+        print(self.intervals)
 
-        elevations.rename(columns=lambda n: f"elevation_{n}", inplace=True)
-        azimuths.rename(columns=lambda n: f"azimuth_{n}", inplace=True)
+        self.elevations.rename(columns=lambda n: f"elevation_{n}", inplace=True)
+        self.azimuths.rename(columns=lambda n: f"azimuth_{n}", inplace=True)
 
-        fit = pd.DataFrame()
-        for index, row in intervals[intervals.use].iterrows():
-            block_start = row["start"]
-            block_end = row["end"]
-            hardpoints = await self.load_hardpoints(block_start, block_end)
-            if hardpoints is None:
-                continue
-            elevations_hardpoints = elevations[
-                (elevations.index >= block_start) & (elevations.index <= block_end)
-            ]
-            azimuths_hardpoints = azimuths[
-                (azimuths.index >= block_start) & (azimuths.index <= block_end)
-            ]
-            data = hardpoints.join(
-                [azimuths_hardpoints, elevations_hardpoints], how="outer", sort=True
-            )
-
-            fit = pd.concat([fit, data])
+        await self.collect_hardpoint_data()
 
         print("Hardpoint data retrieved")
-        print(fit.describe())
-        print(fit["elevation_demandPosition"].describe())
-        print(fit["elevation_actualPosition"].describe())
-        print(fit["elevation_demandVelocity"].describe())
-        print(fit["elevation_actualVelocity"].describe())
-        print(fit["elevation_demandAcceleration"].describe())
-        print(fit["elevation_actualAcceleration"].describe())
+        print(self.fit.describe())
+        print(self.fit["elevation_demandPosition"].describe())
+        print(self.fit["elevation_actualPosition"].describe())
+        print(self.fit["elevation_demandVelocity"].describe())
+        print(self.fit["elevation_actualVelocity"].describe())
+        print(self.fit["elevation_demandAcceleration"].describe())
+        print(self.fit["elevation_actualAcceleration"].describe())
 
-        print(fit["azimuth_demandPosition"].describe())
-        print(fit["azimuth_actualPosition"].describe())
-        print(fit["azimuth_demandVelocity"].describe())
-        print(fit["azimuth_actualVelocity"].describe())
-        print(fit["azimuth_demandAcceleration"].describe())
-        print(fit["azimuth_actualAcceleration"].describe())
+        print(self.fit["azimuth_demandPosition"].describe())
+        print(self.fit["azimuth_actualPosition"].describe())
+        print(self.fit["azimuth_demandVelocity"].describe())
+        print(self.fit["azimuth_actualVelocity"].describe())
+        print(self.fit["azimuth_demandAcceleration"].describe())
+        print(self.fit["azimuth_actualAcceleration"].describe())
 
-        print(fit)
+        print(self.fit)
+        self.fit = self.fit.sort_index()
         if hd5_debug is not None:
-            fit.to_hdf(hd5_debug, "raw")
-        fit = fit.sort_index()
-        fit = fit.interpolate(method="time")
-        fit = fit[fit.index.to_series().diff() < np.timedelta64(1, "s")]
-        print(fit.describe())
-        print(fit)
-        mirror = self.mirror_forces(fit)
+            self.fit.to_hdf(hd5_debug, "raw")
+        self.fit.interpolate(method="time", inplace=True)
+        self.fit = self.fit[self.fit.index.to_series().diff() < np.timedelta64(1, "s")]
+        print(self.fit.describe())
+        print(self.fit)
+        self.mirror = self.mirror_forces(self.fit)
         if hd5_debug is not None:
-            mirror.to_hdf(hd5_debug, "fit")
-        print(mirror)
+            self.mirror.to_hdf(hd5_debug, "fit")
+        print(self.mirror)
 
         # prepare for fit A @ x = B
-        fitter = AccelerationAndVelocitiesFitter(mirror, "actual")
+        self.fitter = AccelerationAndVelocitiesFitter(self.mirror, "actual")
         if hd5_debug is not None:
-            fitter.aav.to_hdf(hd5_debug, "A")
+            self.fitter.aav.to_hdf(hd5_debug, "A")
 
-        coefficients, fit_residuals = fitter.do_fit(mirror)
+        self.coefficients, self.fit_residuals = self.fitter.do_fit(self.mirror)
         print("coefficients")
-        print(coefficients)
-        print(coefficients.describe())
+        print(self.coefficients)
+        print(self.coefficients.describe())
 
         if hd5_debug is not None:
-            coefficients.to_hdf(hd5_debug, "coefficients")
+            self.coefficients.to_hdf(hd5_debug, "coefficients")
 
         if set_new:
-            self.force_calculator.set_acceleration_and_velocity(coefficients)
+            self.force_calculator.set_acceleration_and_velocity(self.coefficients)
         else:
-            self.force_calculator.update_acceleration_and_velocity(coefficients)
+            self.force_calculator.update_acceleration_and_velocity(self.coefficients)
 
-        calculated = self.calculate_forces(fitter, coefficients)
-        mirror_res = pd.DataFrame(
+        self.calculated = self.calculate_forces(self.fitter, self.coefficients)
+        self.mirror_res = pd.DataFrame(
             {
-                "fx": mirror["fx"] + calculated["calculated_fx"],
-                "fy": mirror["fy"] + calculated["calculated_fy"],
-                "fz": mirror["fz"] + calculated["calculated_fz"],
-                "mx": mirror["mx"] + calculated["calculated_mx"],
-                "my": mirror["my"] + calculated["calculated_my"],
-                "mz": mirror["mz"] + calculated["calculated_mz"],
+                "fx": self.mirror["fx"] + self.calculated["calculated_fx"],
+                "fy": self.mirror["fy"] + self.calculated["calculated_fy"],
+                "fz": self.mirror["fz"] + self.calculated["calculated_fz"],
+                "mx": self.mirror["mx"] + self.calculated["calculated_mx"],
+                "my": self.mirror["my"] + self.calculated["calculated_my"],
+                "mz": self.mirror["mz"] + self.calculated["calculated_mz"],
             }
         )
-        mirror_res.rename(columns=lambda n: f"residuals_{n}", inplace=True)
+        self.mirror_res.rename(columns=lambda n: f"residuals_{n}", inplace=True)
+
+        self.residuals = self.mirror.join([self.calculated, self.mirror_res])
+
         if hd5_debug is not None:
-            residuals = mirror
-            residuals = residuals.join([calculated, mirror_res])
-            residuals.to_hdf(hd5_debug, "residuals")
+            self.residuals.to_hdf(hd5_debug, "residuals")
 
         save_to = pathlib.Path("new")
         try:
