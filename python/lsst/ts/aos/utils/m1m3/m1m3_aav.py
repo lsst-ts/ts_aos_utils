@@ -41,6 +41,28 @@ tqdm.pandas()
 
 
 class AccelerationAndVelocities:
+    """Compute fir of M1M3 acceleration and velocities.
+
+    Attributes
+    ----------
+    azimuths : pd.DataFrame
+        Mount azimuth. Contains actual and demand Position, Velocity and Acceleration.
+    elevations : pd.DataFrame
+        Mount elevation. Contains actual and demand Position, Velocity and Acceleration.
+    interpolated : pd.DataFrame
+        Interpolated raw data.
+    intervals : pd.DataFrame
+        Contains start, end and use flag (whenever to use the interval) of
+        intervals suitable for fitting.
+    mirror : pd.DataFrame
+        Mirror forces. Contains interpolated data, with extra X0..11, Y0..99 and Z0..155 columns - those
+        contain data derived from hardpoint forces (f[xyz], m[xyz]). Those are
+        the per-mirror (XYZ) forces the algorithm needs to counter-act.
+    raw : pd.DataFrame
+        Raw data. Concatenation of azimuths, elevations and hardpoint forces.
+        Contains null/NaNs, as the three tables are merged together.
+    """
+
     def __init__(self, efd_name: str, config: str):
         self.efd_name = efd_name
         self.force_calculator = ForceCalculator(config)
@@ -48,6 +70,13 @@ class AccelerationAndVelocities:
         self.actual_velocity_limit = 0.01
         self.demand_velocity_limit = 0.01
         self.detailed_states: pd.DataFrame | None = None
+
+        self.azimuths: pd.DataFrame | None = None
+        self.elevations: pd.DataFrame | None = None
+        self.interpolated: pd.DataFrame | None = None
+        self.intervals: pd.DataFrame | None = None
+        self.mirror: pd.DataFrame | None = None
+        self.raw: pd.DataFrame | None = None
 
     async def load_detailed_state(
         self, start_time: Time, end_time: Time
@@ -98,10 +127,9 @@ class AccelerationAndVelocities:
             == 0
         )
 
-    async def find_az_el(
-        self, start_time: Time, end_time: Time
-    ) -> (pd.DataFrame, pd.DataFrame):
-        """Find times when elevations and azimuth MTMount axis moved."""
+    async def find_az_el(self, start_time: Time, end_time: Time) -> None:
+        """Find times when elevations and azimuth MTMount axis moved. Store
+        elevations and azimuth to elevations and azimuths attributes."""
 
         async def find_axis(axis: str) -> pd.DataFrame:
             query = (
@@ -143,12 +171,10 @@ class AccelerationAndVelocities:
             ret["actualAcceleration"] = ret["actualVelocity"].diff().div(den, axis=0)
             return ret
 
-        elevations = await find_axis("elevation")
-        azimuths = await find_axis("azimuth")
+        self.elevations = await find_axis("elevation")
+        self.azimuths = await find_axis("azimuth")
 
-        return elevations, azimuths
-
-    async def find_applicable_times(self) -> pd.DataFrame:
+    async def find_applicable_times(self) -> None:
         """Find start and end times of any axis movents."""
         ret = []
 
@@ -201,9 +227,8 @@ class AccelerationAndVelocities:
                 ]
             ]
 
-        data = pd.DataFrame(ret, columns=["start", "end", "use"])
-        data.index = data["start"]
-        return data
+        self.intervals = pd.DataFrame(ret, columns=["start", "end", "use"])
+        self.intervals.index = self.intervals["start"]
 
     def calculate_forces(
         self, fitter: AccelerationAndVelocitiesFitter, coefficients: pd.DataFrame
@@ -282,7 +307,10 @@ class AccelerationAndVelocities:
         return fit.merge(applied, how="left", left_index=True, right_index=True)
 
     async def collect_hardpoint_data(self) -> None:
-        self.fit = pd.DataFrame()
+        assert self.azimuths is not None
+        assert self.elevations is not None
+
+        self.raw = pd.DataFrame()
         for index, row in self.intervals[self.intervals.use].iterrows():
             block_start = row["start"]
             block_end = row["end"]
@@ -301,7 +329,7 @@ class AccelerationAndVelocities:
                 [azimuths_hardpoints, elevations_hardpoints], how="outer", sort=True
             )
 
-            self.fit = pd.concat([self.fit, data])
+            self.raw = pd.concat([self.raw, data])
 
     async def fit_aav(
         self,
@@ -316,42 +344,50 @@ class AccelerationAndVelocities:
 
         await self.load_detailed_state(start_time, end_time)
 
-        self.elevations, self.azimuths = await self.find_az_el(start_time, end_time)
-        self.intervals = await self.find_applicable_times()
+        await self.find_az_el(start_time, end_time)
+        await self.find_applicable_times()
+
+        assert self.intervals is not None
         print(self.intervals)
+
+        assert self.azimuths is not None
+        assert self.elevations is not None
 
         self.elevations.rename(columns=lambda n: f"elevation_{n}", inplace=True)
         self.azimuths.rename(columns=lambda n: f"azimuth_{n}", inplace=True)
 
         await self.collect_hardpoint_data()
-
         print("Hardpoint data retrieved")
-        print(self.fit.describe())
-        print(self.fit["elevation_demandPosition"].describe())
-        print(self.fit["elevation_actualPosition"].describe())
-        print(self.fit["elevation_demandVelocity"].describe())
-        print(self.fit["elevation_actualVelocity"].describe())
-        print(self.fit["elevation_demandAcceleration"].describe())
-        print(self.fit["elevation_actualAcceleration"].describe())
 
-        print(self.fit["azimuth_demandPosition"].describe())
-        print(self.fit["azimuth_actualPosition"].describe())
-        print(self.fit["azimuth_demandVelocity"].describe())
-        print(self.fit["azimuth_actualVelocity"].describe())
-        print(self.fit["azimuth_demandAcceleration"].describe())
-        print(self.fit["azimuth_actualAcceleration"].describe())
+        assert self.raw is not None
 
-        print(self.fit)
-        self.fit = self.fit.sort_index()
+        print(self.raw.describe())
+        print(self.raw["elevation_demandPosition"].describe())
+        print(self.raw["elevation_actualPosition"].describe())
+        print(self.raw["elevation_demandVelocity"].describe())
+        print(self.raw["elevation_actualVelocity"].describe())
+        print(self.raw["elevation_demandAcceleration"].describe())
+        print(self.raw["elevation_actualAcceleration"].describe())
+
+        print(self.raw["azimuth_demandPosition"].describe())
+        print(self.raw["azimuth_actualPosition"].describe())
+        print(self.raw["azimuth_demandVelocity"].describe())
+        print(self.raw["azimuth_actualVelocity"].describe())
+        print(self.raw["azimuth_demandAcceleration"].describe())
+        print(self.raw["azimuth_actualAcceleration"].describe())
+
+        print(self.raw)
+        self.raw.sort_index(inplace=True)
         if hd5_debug is not None:
-            self.fit.to_hdf(hd5_debug, "raw")
-        self.fit.interpolate(method="time", inplace=True)
-        self.fit = self.fit[self.fit.index.to_series().diff() < np.timedelta64(1, "s")]
-        print(self.fit.describe())
-        print(self.fit)
-        self.mirror = self.mirror_forces(self.fit)
+            self.raw.to_hdf(hd5_debug, "raw")
+        self.interpolated = self.raw.interpolate(method="time")
+        self.interpolated = self.interpolated[
+            self.interpolated.index.to_series().diff() < np.timedelta64(1, "s")
+        ]
+        print(self.interpolated.describe())
+        self.mirror = self.mirror_forces(self.interpolated)
         if hd5_debug is not None:
-            self.mirror.to_hdf(hd5_debug, "fit")
+            self.mirror.to_hdf(hd5_debug, "mirror")
         print(self.mirror)
 
         # prepare for fit A @ x = B
