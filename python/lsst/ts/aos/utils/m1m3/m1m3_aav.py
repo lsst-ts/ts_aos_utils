@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-__all__ = ["AccelerationAndVelocities"]
+__all__ = ["AccelerationAndVelocity"]
 
 import argparse
 import asyncio
@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 from astropy.time import Time
 from lsst.ts.criopy import M1M3FATable
-from lsst.ts.criopy.m1m3 import AccelerationAndVelocitiesFitter, ForceCalculator
+from lsst.ts.criopy.m1m3 import AccelerationAndVelocityFitter, ForceCalculator
 from lsst.ts.idl.enums.MTM1M3 import DetailedState
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
@@ -40,7 +40,7 @@ from tqdm import tqdm
 tqdm.pandas()
 
 
-class AccelerationAndVelocities:
+class AccelerationAndVelocity:
     """Compute fir of M1M3 acceleration and velocities.
 
     Attributes
@@ -266,7 +266,7 @@ class AccelerationAndVelocities:
         self.intervals.index = self.intervals["start"]
 
     def calculate_forces(
-        self, fitter: AccelerationAndVelocitiesFitter, coefficients: pd.DataFrame
+        self, fitter: AccelerationAndVelocityFitter, coefficients: pd.DataFrame
     ) -> pd.DataFrame:
         results = pd.DataFrame(fitter.aav.values @ coefficients.values) / 1000.0
 
@@ -426,7 +426,7 @@ class AccelerationAndVelocities:
         print(self.mirror)
 
         # prepare for fit A @ x = B
-        self.fitter = AccelerationAndVelocitiesFitter(self.mirror, "actual")
+        self.fitter = AccelerationAndVelocityFitter(self.mirror, "actual")
         if hd5_debug is not None:
             self.fitter.aav.to_hdf(hd5_debug, "A")
 
@@ -531,7 +531,7 @@ def parse_arguments() -> argparse.Namespace:
 async def run_loop() -> None:
     args = parse_arguments()
 
-    aav = AccelerationAndVelocities(args.efd, args.config)
+    aav = AccelerationAndVelocity(args.efd, args.config)
     await aav.fit_aav(
         args.start_time,
         args.end_time,
