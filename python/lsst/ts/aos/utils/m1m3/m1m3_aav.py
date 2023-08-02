@@ -23,12 +23,11 @@ __all__ = ["AccelerationAndVelocity"]
 
 import argparse
 import asyncio
+import logging
 import os
 import pathlib
 
 import numpy as np
-
-# import matplotlib.pyplot as plt
 import pandas as pd
 from astropy.time import Time
 from lsst.ts.criopy import M1M3FATable
@@ -48,11 +47,15 @@ class AccelerationAndVelocity:
     azimuths : pd.DataFrame
         Mount azimuth. Contains actual and demand Position, Velocity and
         Acceleration.
+    calculated : od.DataFrame
+        Forces and moments calculated from the fit.
     detailed_states : pd.DataFrame
         Mirror detailed states before and during selected time interval.
     elevations : pd.DataFrame
         Mount elevation. Contains actual and demand Position, Velocity and
         Acceleration.
+    fitter : AccelerationAndVelocityFitter
+        Fitter doing the actual work - fitting data.
     interpolated : pd.DataFrame
         Interpolated raw data.
     intervals : pd.DataFrame
@@ -66,6 +69,8 @@ class AccelerationAndVelocity:
     raw : pd.DataFrame
         Raw data. Concatenation of azimuths, elevations and hardpoint forces.
         Contains null/NaNs, as the three tables are merged together.
+    residuals : pd.DataFrame
+        Residuals of six forces/components.
     """
 
     def __init__(self, efd_name: str, config: str):
@@ -77,8 +82,10 @@ class AccelerationAndVelocity:
         self.detailed_states: pd.DataFrame | None = None
 
         self.azimuths: pd.DataFrame | None = None
+        self.calculated: pd.DataFrame | None = None
         self.detailed_states: pd.DataFrame | None = None
         self.elevations: pd.DataFrame | None = None
+        self.fitter: AccelerationAndVelocityFitter | None = None
         self.interpolated: pd.DataFrame | None = None
         self.intervals: pd.DataFrame | None = None
         self.mirror: pd.DataFrame | None = None
@@ -101,7 +108,7 @@ class AccelerationAndVelocity:
         """
 
         # find last state before start_time
-        print(f"Retrieve last detailedState before {start_time.isot}..", end="")
+        logging.info(f"Retrieve last detailedState before {start_time.isot}.")
         query = (
             "SELECT detailedState "
             'FROM "efd"."autogen"."lsst.sal.MTM1M3.logevent_detailedState" '
@@ -178,7 +185,7 @@ class AccelerationAndVelocity:
         """
 
         async def find_axis(axis: str) -> pd.DataFrame:
-            print("Querying EFD")
+            logging.info(f"Querying EFD for {axis} data")
             ret = await self.client.select_time_series(
                 f"lsst.sal.MTMount.{axis}",
                 [
@@ -204,13 +211,27 @@ class AccelerationAndVelocity:
             den = ret["timediff"]
             ret["demandAcceleration"] = ret["demandVelocity"].diff().div(den, axis=0)
             ret["actualAcceleration"] = ret["actualVelocity"].diff().div(den, axis=0)
+            logging.info(
+                f"Retrieved {axis} {len(ret.index)} rows. "
+                f"Ranges: {ret.demandPosition.min():+.2f} .. "
+                f"{ret.demandPosition.max():+.2f}"
+                f", {ret.actualPosition.min():+.2f} .. "
+                f"{ret.actualPosition.max():+.2f}"
+            )
             return ret
 
         self.elevations = await find_axis("elevation")
         self.azimuths = await find_axis("azimuth")
 
     async def find_applicable_times(self) -> None:
-        """Find start and end times of any axis movents."""
+        """Find start and end times of any axis movents. Uses self.elevations
+        and self.azimuths data retrieved in find_az_el method.
+
+        Fills self.intervals with start and stop times usefull for fitting.
+        """
+        assert self.azimuths is not None
+        assert self.elevations is not None
+
         ret = []
 
         movements = pd.concat(
@@ -247,12 +268,14 @@ class AccelerationAndVelocity:
                         #    else len(df_notmoving[start:end].index) == 0,
                     )
                 else:
-                    print(
+                    logging.warning(
                         f"Interval {start.isot} - {end.isot} "
                         "mirror was not raised, ignoring."
                     )
             start = index
 
+        # if no movement, use full range - this is for short times usefulla ss
+        # tests
         if len(ret) == 0:
             ret = [
                 [
@@ -265,13 +288,18 @@ class AccelerationAndVelocity:
         self.intervals = pd.DataFrame(ret, columns=["start", "end", "use"])
         self.intervals.index = self.intervals["start"]
 
-    def calculate_forces(
-        self, fitter: AccelerationAndVelocityFitter, coefficients: pd.DataFrame
-    ) -> pd.DataFrame:
-        results = pd.DataFrame(fitter.aav.values @ coefficients.values) / 1000.0
+    def calculate_forces(self) -> None:
+        """Calculate forces from velocity and accelerations.
+
+        Fills self.calculated with calculated values.
+
+        """
+        assert self.mirror is not None
 
         def vect_to_fam(row: pd.Series) -> pd.Series:
-            applied = self.force_calculator.get_applied_forces_from_series(row)
+            applied = self.force_calculator.velocity(
+                row.values[:3]
+            ) + self.force_calculator.acceleration(row.values[3:])
 
             return pd.Series(
                 [
@@ -281,22 +309,21 @@ class AccelerationAndVelocity:
                     applied.mx,
                     applied.my,
                     applied.mz,
+                    applied.forceMagnitude,
                 ],
                 index=[f"calculated_f{a}" for a in "xyz"]
-                + [f"calculated_m{a}" for a in "xyz"],
+                + [f"calculated_m{a}" for a in "xyz"]
+                + ["forceMagnitude"],
             )
 
-        print("Calculating calculated forces - backpropagation")
-        calculated = results.progress_apply(vect_to_fam, axis=1)
-        calculated.set_index(fitter.aav.index, inplace=True)
-        return calculated
+        aav = pd.concat([self.fitter.velocities, self.fitter.accelerations], axis=1)
 
-    async def load_hardpoints(
-        self, start_time: pd.Timestamp, end_time: pd.Timestamp
-    ) -> None | pd.DataFrame:
-        start = Time(start_time)
-        end = Time(end_time)
-        print(f"Retrieving HP data for {start.isot} - {end.isot}..", end="")
+        logging.info("Calculating new mirrorforces - backpropagation")
+        self.calculated = aav.progress_apply(vect_to_fam, axis=1)
+        self.calculated.set_index(self.fitter.aav.index, inplace=True)
+
+    async def load_hardpoints(self, start: Time, end: Time) -> None | pd.DataFrame:
+        logging.debug(f"Retrieving HP data for {start.isot} - {end.isot}..")
         ret = await self.client.select_time_series(
             "lsst.sal.MTM1M3.hardpointActuatorData",
             ["timestamp"]
@@ -307,7 +334,7 @@ class AccelerationAndVelocity:
             end,
         )
         if ret.empty:
-            print("empty, ignored")
+            logging.debug("empty, ignored")
             return None
         ret.set_index(
             pd.DatetimeIndex(
@@ -315,7 +342,7 @@ class AccelerationAndVelocity:
             ),
             inplace=True,
         )
-        print("OK")
+        logging.debug(f"..OK ({len(ret.index)} records)")
         return ret
 
     def mirror_forces(self, fit: pd.DataFrame) -> pd.DataFrame:
@@ -334,12 +361,13 @@ class AccelerationAndVelocity:
                 index=fa_names,
             )
 
-        print("Calculating mirror forces")
-        applied = fit.progress_apply(fa_forces, axis=1)
-        applied.set_index(fit.index, inplace=True)
-        print(applied)
+        logging.info("Calculating mirror forces")
+        applied = self.interpolated.progress_apply(fa_forces, axis=1)
+        applied.set_index(self.interpolated.index, inplace=True)
 
-        return fit.merge(applied, how="left", left_index=True, right_index=True)
+        return self.interpolated.merge(
+            applied, how="left", left_index=True, right_index=True
+        )
 
     async def collect_hardpoint_data(self) -> None:
         assert self.azimuths is not None
@@ -349,7 +377,7 @@ class AccelerationAndVelocity:
         for index, row in self.intervals[self.intervals.use].iterrows():
             block_start = row["start"]
             block_end = row["end"]
-            hardpoints = await self.load_hardpoints(block_start, block_end)
+            hardpoints = await self.load_hardpoints(Time(block_start), Time(block_end))
             if hardpoints is None:
                 continue
             elevations_hardpoints = self.elevations[
@@ -366,10 +394,56 @@ class AccelerationAndVelocity:
 
             self.raw = pd.concat([self.raw, data])
 
+    def plot_axes(self) -> None:
+        assert self.mirror is not None
+
+        import matplotlib.pyplot as plt
+
+        for ax in ["azimuth", "elevation"]:
+            fig, axes = plt.subplots(nrows=3, ncols=1)
+            self.mirror.plot(
+                y=[f"{ax}_demandPosition", f"{ax}_actualPosition"],
+                ax=axes[0],
+                style=".-",
+            )
+            self.mirror.plot(
+                y=[f"{ax}_demandVelocity", f"{ax}_actualVelocity"],
+                ax=axes[1],
+                style=".-",
+            )
+            self.mirror.plot(
+                y=[f"{ax}_demandAcceleration", f"{ax}_actualAcceleration"],
+                ax=axes[2],
+                style=".-",
+            )
+
+            plt.show()
+
+    def plot_residuals(self) -> None:
+        assert self.residuals is not None
+
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(nrows=6, ncols=1)
+
+        def plot_axis(name: str, row: int) -> None:
+            self.residuals.plot(
+                y=[f"{name}", f"calculated_{name}", f"residuals_{name}"],
+                ax=axes[row],
+                style=".-",
+            )
+
+        for r, ax in enumerate([f"f{a}" for a in "xyz"] + [f"m{a}" for a in "xyz"]):
+            plot_axis(ax, r)
+
+        plt.show()
+
     async def fit_aav(
         self,
         start_time: Time,
         end_time: Time,
+        out_dir: pathlib.Path,
+        fit_values: str,
         set_new: bool,
         plot: bool,
         hd5_debug: None | str,
@@ -383,7 +457,6 @@ class AccelerationAndVelocity:
         await self.find_applicable_times()
 
         assert self.intervals is not None
-        print(self.intervals)
 
         assert self.azimuths is not None
         assert self.elevations is not None
@@ -392,48 +465,52 @@ class AccelerationAndVelocity:
         self.azimuths.rename(columns=lambda n: f"azimuth_{n}", inplace=True)
 
         await self.collect_hardpoint_data()
-        print("Hardpoint data retrieved")
+
+        logging.info("Hardpoint data retrieved")
 
         assert self.raw is not None
 
-        print(self.raw.describe())
-        print(self.raw["elevation_demandPosition"].describe())
-        print(self.raw["elevation_actualPosition"].describe())
-        print(self.raw["elevation_demandVelocity"].describe())
-        print(self.raw["elevation_actualVelocity"].describe())
-        print(self.raw["elevation_demandAcceleration"].describe())
-        print(self.raw["elevation_actualAcceleration"].describe())
-
-        print(self.raw["azimuth_demandPosition"].describe())
-        print(self.raw["azimuth_actualPosition"].describe())
-        print(self.raw["azimuth_demandVelocity"].describe())
-        print(self.raw["azimuth_actualVelocity"].describe())
-        print(self.raw["azimuth_demandAcceleration"].describe())
-        print(self.raw["azimuth_actualAcceleration"].describe())
-
-        print(self.raw)
         self.raw.sort_index(inplace=True)
         if hd5_debug is not None:
             self.raw.to_hdf(hd5_debug, "raw")
+
+        logging.info(f"Raw data: {len(self.raw.index)} rows")
+
         self.interpolated = self.raw.interpolate(method="time")
         self.interpolated = self.interpolated[
             self.interpolated.index.to_series().diff() < np.timedelta64(1, "s")
         ]
-        print(self.interpolated.describe())
         self.mirror = self.mirror_forces(self.interpolated)
         if hd5_debug is not None:
             self.mirror.to_hdf(hd5_debug, "mirror")
-        print(self.mirror)
+
+        logging.info(
+            f"Mirror data: {len(self.mirror.index)} rows, "
+            f"azimuth {self.mirror.azimuth_demandPosition.min():.2f}"
+            f" .. {self.mirror.azimuth_demandPosition.max():.2f}, "
+            f"elevation {self.mirror.elevation_demandPosition.min():.2f}"
+            f" .. {self.mirror.elevation_demandPosition.max():.2f}"
+        )
+
+        if plot:
+            self.plot_axes()
 
         # prepare for fit A @ x = B
-        self.fitter = AccelerationAndVelocityFitter(self.mirror, "actual")
+        self.fitter = AccelerationAndVelocityFitter(self.mirror, fit_values)
         if hd5_debug is not None:
             self.fitter.aav.to_hdf(hd5_debug, "A")
 
+        old_coeff = np.mean(
+            np.concatenate(
+                (
+                    self.force_calculator.velocity_tables,
+                    self.force_calculator.acceleration_tables,
+                ),
+                axis=None,
+            )
+        )
+
         self.coefficients, self.fit_residuals = self.fitter.do_fit(self.mirror)
-        print("coefficients")
-        print(self.coefficients)
-        print(self.coefficients.describe())
 
         if hd5_debug is not None:
             self.coefficients.to_hdf(hd5_debug, "coefficients")
@@ -443,7 +520,26 @@ class AccelerationAndVelocity:
         else:
             self.force_calculator.update_acceleration_and_velocity(self.coefficients)
 
-        self.calculated = self.calculate_forces(self.fitter, self.coefficients)
+        new_coeff = np.mean(
+            np.concatenate(
+                (
+                    self.force_calculator.velocity_tables,
+                    self.force_calculator.acceleration_tables,
+                ),
+                axis=None,
+            )
+        )
+
+        logging.info(
+            f"Coefficients mean - old {old_coeff:.2f}, "
+            f"current {self.coefficients.values.mean():.2f}, "
+            f"new {new_coeff:.2f}"
+        )
+
+        self.calculate_forces()
+
+        assert self.calculated is not None
+
         self.mirror_res = pd.DataFrame(
             {
                 "fx": self.mirror["fx"] + self.calculated["calculated_fx"],
@@ -454,6 +550,16 @@ class AccelerationAndVelocity:
                 "mz": self.mirror["mz"] + self.calculated["calculated_mz"],
             }
         )
+
+        for axis in [f"f{a}" for a in "xyz"] + [f"m{a}" for a in "xyz"]:
+            logging.info(
+                f"Residuals {axis} "
+                f"min {np.min(self.mirror_res[axis]):.2f} "
+                f"mean {np.mean(self.mirror_res[axis]):.2f} "
+                f"max {np.max(self.mirror_res[axis]):.2f} "
+                f"std {np.std(self.mirror_res[axis]):.2f}"
+            )
+
         self.mirror_res.rename(columns=lambda n: f"residuals_{n}", inplace=True)
 
         self.residuals = self.mirror.join([self.calculated, self.mirror_res])
@@ -461,18 +567,16 @@ class AccelerationAndVelocity:
         if hd5_debug is not None:
             self.residuals.to_hdf(hd5_debug, "residuals")
 
-        save_to = pathlib.Path("new")
         try:
-            os.makedirs(save_to)
+            os.makedirs(out_dir)
         except FileExistsError:
             pass
 
-        self.force_calculator.save(pathlib.Path("new"))
+        self.force_calculator.save(out_dir)
+        logging.info(f"Saved new tables into {out_dir} directory")
 
-        # plt.plot(fit["demandVelocity"], fit["my"], ".")
-        # plt.plot(fit["demandAcceleration"], fit["my"], ".")
-        # plt.show()
-        # print(df)
+        if plot:
+            self.plot_residuals()
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -504,6 +608,12 @@ def parse_arguments() -> argparse.Namespace:
         "--m1m3-config", default=None, help="Path to the LUT file to be updated"
     )
     parser.add_argument(
+        "--fit-values",
+        choices=["actual", "demand"],
+        default="actual",
+        help="Fit actual or demand accelerations and velocities",
+    )
+    parser.add_argument(
         "--plot", default=False, action="store_true", help="Plot graphs during"
     )
     parser.add_argument(
@@ -524,6 +634,11 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="save debug outputs as provided HDF5 file.",
     )
+    parser.add_argument(
+        "--out-dir",
+        type=pathlib.Path,
+        default=Time.now().isot,
+    )
 
     return parser.parse_args()
 
@@ -531,10 +646,14 @@ def parse_arguments() -> argparse.Namespace:
 async def run_loop() -> None:
     args = parse_arguments()
 
+    logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
+
     aav = AccelerationAndVelocity(args.efd, args.config)
     await aav.fit_aav(
         args.start_time,
         args.end_time,
+        args.out_dir,
+        args.fit_values,
         args.set_new,
         args.plot,
         args.hd5_debug,
