@@ -639,6 +639,12 @@ def parse_arguments() -> argparse.Namespace:
         type=pathlib.Path,
         default=Time.now().isot,
     )
+    parser.add_argument(
+        "-d",
+        default=False,
+        action="store_true",
+        help="Print debug messages",
+    )
 
     return parser.parse_args()
 
@@ -646,7 +652,12 @@ def parse_arguments() -> argparse.Namespace:
 async def run_loop() -> None:
     args = parse_arguments()
 
-    logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
+    level = logging.INFO
+
+    if args.d:
+        level = logging.DEBUG
+
+    logging.basicConfig(format="%(asctime)s %(message)s", level=level)
 
     aav = AccelerationAndVelocity(args.efd, args.config)
     await aav.fit_aav(
