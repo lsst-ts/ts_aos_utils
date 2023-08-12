@@ -40,7 +40,7 @@ tqdm.pandas()
 
 
 class AccelerationAndVelocity:
-    """Compute fir of M1M3 acceleration and velocities.
+    """Compute fit of the M1M3 accelerations and velocities forces.
 
     Parameters
     ----------
@@ -55,7 +55,7 @@ class AccelerationAndVelocity:
     azimuths : pd.DataFrame
         Mount azimuth. Contains actual and demand Position, Velocity and
         Acceleration.
-    calculated : pd.DataFrame
+    calculated_fam : pd.DataFrame
         Forces and moments calculated from the fit.
     coefficients : pd.DataFrame
         Coefficients for velocity and acceleration transformation.
@@ -94,7 +94,7 @@ class AccelerationAndVelocity:
         self.detailed_states: pd.DataFrame | None = None
 
         self.azimuths: pd.DataFrame | None = None
-        self.calculated: pd.DataFrame | None = None
+        self.calculated_fam: pd.DataFrame | None = None
         self.coefficients: pd.DataFrame | None = None
         self.detailed_states: pd.DataFrame | None = None
         self.elevations: pd.DataFrame | None = None
@@ -117,7 +117,7 @@ class AccelerationAndVelocity:
 
             for loads in [
                 "azimuths",
-                "calculated",
+                "calculated_fam",
                 "coefficients",
                 "elevations",
                 "intervals",
@@ -128,10 +128,10 @@ class AccelerationAndVelocity:
                 setattr(self, loads, try_load(loads))
 
     async def load_detailed_state(self, start_time: Time, end_time: Time) -> None:
-        """Find detailedState. Last pre-dating start_time, and all in
-        start_time till end_time. Those are primary used to verify mirror
-        wasn't lowered during slew - was either in ACTIVE or ACTIVEENGINEERING
-        detailedState.
+        """Find M1M3's detailedState events. The last event entry pre-dating
+        start_time, and all events in start_time till end_time are returned.
+        Those are primary used to verify mirror wasn't lowered during slew -
+        was either in ACTIVE or ACTIVEENGINEERING detailedState.
 
         Fills self.detailed_states.
 
@@ -221,6 +221,20 @@ class AccelerationAndVelocity:
         """
 
         async def find_axis(axis: str) -> pd.DataFrame:
+            """Retrieve axis data.
+
+            Parameters
+            ----------
+            axis : `str`
+                Axis to retrieve. Either elevation or azimuth.
+
+            Returns
+            -------
+            ret : pd.DataFrame
+                DataFrame with axis data. demand and actual Accelerations are
+                calculated as difference in speed from the last datapoint,
+                divided by interval between the two measurements.
+            """
             logging.info(f"Querying EFD for {axis} data")
             ret = await self.client.select_time_series(
                 f"lsst.sal.MTMount.{axis}",
@@ -300,8 +314,6 @@ class AccelerationAndVelocity:
                             end,
                             True,
                         ]
-                        #    if df_notmoving is None
-                        #    else len(df_notmoving[start:end].index) == 0,
                     )
                 else:
                     logging.warning(
@@ -324,10 +336,10 @@ class AccelerationAndVelocity:
         self.intervals = pd.DataFrame(ret, columns=["start", "end", "use"])
         self.intervals.index = self.intervals["start"]
 
-    def calculate_forces(self) -> None:
-        """Calculate forces from velocity and accelerations.
+    def calculate_forces_and_moments(self) -> None:
+        """Calculate forces and moments from velocity and accelerations.
 
-        Fills self.calculated with calculated values.
+        Fills self.calculated_fam with calculated forces and moments.
 
         """
         assert self.mirror is not None
@@ -352,13 +364,35 @@ class AccelerationAndVelocity:
                 + ["forceMagnitude"],
             )
 
-        aav = pd.concat([self.fitter.velocities, self.fitter.accelerations], axis=1)
+        acceleration_and_velocity = pd.concat(
+            [self.fitter.velocities, self.fitter.accelerations], axis=1
+        )
 
         logging.info("Calculating new mirror forces - backpropagation")
-        self.calculated = aav.progress_apply(vect_to_fam, axis=1)
-        self.calculated.set_index(self.fitter.aav.index, inplace=True)
+        self.calculated_fam = acceleration_and_velocity.progress_apply(
+            vect_to_fam, axis=1
+        )
+        self.calculated_fam.set_index(self.fitter.aav.index, inplace=True)
 
     async def load_hardpoints(self, start: Time, end: Time) -> None | pd.DataFrame:
+        """Load hardpoint forces and moments in given interval. Those are used
+        to calculate (throuigh standard distribution matrices) per-actuator
+        offset forces. Those are target values for fitting of the acceleration
+        and velocity forces.
+
+        Parameters
+        ----------
+        start : Time
+            Search interval start time.
+        end : Time
+            Search interval end time.
+
+        Returns
+        -------
+        ret : pd.DataFrame
+            Time indexed dataframe with measured hardpoint forces (f[xyz]) and
+            moments (m[xyz]).
+        """
         logging.debug(f"Retrieving HP data for {start.isot} - {end.isot}..")
         ret = await self.client.select_time_series(
             "lsst.sal.MTM1M3.hardpointActuatorData",
@@ -381,31 +415,12 @@ class AccelerationAndVelocity:
         logging.debug(f"..OK ({len(ret.index)} records)")
         return ret
 
-    def mirror_forces(self, fit: pd.DataFrame) -> pd.DataFrame:
-        fa_names = (
-            [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
-            + [f"Y{y}" for y in range(M1M3FATable.FATABLE_YFA)]
-            + [f"Z{z}" for z in range(M1M3FATable.FATABLE_ZFA)]
-        )
-
-        def fa_forces(row: pd.Series) -> pd.Series:
-            forces = self.force_calculator.forces_and_moments_forces(
-                [row["fx"], row["fy"], row["fz"], row["mx"], row["my"], row["mz"]]
-            )
-            return pd.Series(
-                np.concatenate((forces.xForces, forces.yForces, forces.zForces)),
-                index=fa_names,
-            )
-
-        logging.info("Calculating mirror forces")
-        applied = self.interpolated.progress_apply(fa_forces, axis=1)
-        applied.set_index(self.interpolated.index, inplace=True)
-
-        return self.interpolated.merge(
-            applied, how="left", left_index=True, right_index=True
-        )
-
     async def collect_hardpoint_data(self) -> None:
+        """Collect hardpoint forces for interval specified in self.intervals
+        DataFrame.
+
+        Fills self.raw DataFrame.
+        """
         assert self.azimuths is not None
         assert self.elevations is not None
 
@@ -430,7 +445,38 @@ class AccelerationAndVelocity:
 
             self.raw = pd.concat([self.raw, data])
 
+    def mirror_forces_and_moments(self) -> None:
+        """Calculate mirror forces from hardpoint forces and moments.
+        Hardpoint values (retrieved in load_hardpoints) are distributed to
+        mirror forces. Mirror forces are fit target values.
+
+        Fills self.mirror DataFrame.
+        """
+        fa_names = (
+            [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
+            + [f"Y{y}" for y in range(M1M3FATable.FATABLE_YFA)]
+            + [f"Z{z}" for z in range(M1M3FATable.FATABLE_ZFA)]
+        )
+
+        def fa_forces(row: pd.Series) -> pd.Series:
+            forces = self.force_calculator.forces_and_moments_forces(
+                [row["fx"], row["fy"], row["fz"], row["mx"], row["my"], row["mz"]]
+            )
+            return pd.Series(
+                np.concatenate((forces.xForces, forces.yForces, forces.zForces)),
+                index=fa_names,
+            )
+
+        logging.info("Calculating mirror forces")
+        applied = self.interpolated.progress_apply(fa_forces, axis=1)
+        applied.set_index(self.interpolated.index, inplace=True)
+
+        self.mirror = self.interpolated.merge(
+            applied, how="left", left_index=True, right_index=True
+        )
+
     def plot_acc_forces(self) -> None:
+        """Plot together velocity, acceleration and calculated forces."""
         assert self.raw is not None
 
         import matplotlib.pyplot as plt
@@ -439,9 +485,30 @@ class AccelerationAndVelocity:
 
         for r, m_ax in enumerate("xyz"):
             axis = "elevation" if m_ax == "x" else "azimuth"
-            self.raw[axis != 0]
+            self.mirror.plot(
+                y=[
+                    f"{axis}_demandVelocity",
+                    f"{axis}_actualVelocity",
+                    f"{axis}_demandAcceleration",
+                    f"{axis}_actualAcceleration",
+                ],
+                ax=axes[r],
+                style=".-",
+            )
+            self.calculated_fam.plot(
+                y=["calculated_mx", "calculated_my", "calculated_mz"],
+                ax=axes[r],
+                style=".-",
+                secondary_y=True,
+            )
+            self.mirror.plot(
+                y=["mx", "my", "mz"], ax=axes[r], style=".-", secondary_y=True
+            )
+
+        plt.show()
 
     def plot_axes(self) -> None:
+        """Plot axes (azimuth and elevation) data."""
         assert self.mirror is not None
 
         import matplotlib.pyplot as plt
@@ -467,6 +534,7 @@ class AccelerationAndVelocity:
             plt.show()
 
     def plot_residuals(self) -> None:
+        """Plot fit residuals."""
         assert self.residuals is not None
 
         import matplotlib.pyplot as plt
@@ -493,8 +561,28 @@ class AccelerationAndVelocity:
         fit_values: str,
         set_new: bool,
         plot: bool,
-        hd5_debug: None | str,
+        hd5_debug: None | pathlib.Path,
     ) -> None:
+        """Fit acceleration and velocity (aav) forces.
+
+        Parameters
+        ----------
+        start_time : Time
+            Fit start time interval,
+        end_time : Time
+            Fit end time interval.
+        out_dir : pathlib.Path
+            Directory where output files will be stored.
+        fit_values : str
+            Whenever to fit actual or demand values.
+        set_new : bool
+            Don't add fit to existing values. If true, it's assumed data were
+            collected without acceleration and velocity compensations.
+        plot : bool
+            If true, produce various plots as data are retrieved and processed.
+        hd5_debug : str
+            If not None, store intermediate data into this hd5 file.
+        """
         self.client = EfdClient(self.efd_name)
         self._plot = plot
 
@@ -537,7 +625,10 @@ class AccelerationAndVelocity:
             self.interpolated = self.interpolated[
                 self.interpolated.index.to_series().diff() < np.timedelta64(1, "s")
             ]
-            self.mirror = self.mirror_forces(self.interpolated)
+            self.mirror_forces_and_moments()
+
+            assert self.mirror is not None
+
             if hd5_debug is not None:
                 self.mirror.to_hdf(hd5_debug, "mirror")
 
@@ -596,23 +687,26 @@ class AccelerationAndVelocity:
             f"new {new_coeff:.2f}"
         )
 
-        if self.calculated is None:
-            self.calculate_forces()
+        if self.calculated_fam is None:
+            self.calculate_forces_and_moments()
 
-        assert self.calculated is not None
+        assert self.calculated_fam is not None
 
         if hd5_debug is not None:
-            self.calculated.to_hdf(hd5_debug, "calculated")
+            self.calculated_fam.to_hdf(hd5_debug, "calculated_fam")
+
+        if plot:
+            self.plot_acc_forces()
 
         if self.residuals is None:
             self.mirror_res = pd.DataFrame(
                 {
-                    "fx": self.mirror["fx"] + self.calculated["calculated_fx"],
-                    "fy": self.mirror["fy"] + self.calculated["calculated_fy"],
-                    "fz": self.mirror["fz"] + self.calculated["calculated_fz"],
-                    "mx": self.mirror["mx"] + self.calculated["calculated_mx"],
-                    "my": self.mirror["my"] + self.calculated["calculated_my"],
-                    "mz": self.mirror["mz"] + self.calculated["calculated_mz"],
+                    "fx": self.mirror["fx"] + self.calculated_fam["calculated_fx"],
+                    "fy": self.mirror["fy"] + self.calculated_fam["calculated_fy"],
+                    "fz": self.mirror["fz"] + self.calculated_fam["calculated_fz"],
+                    "mx": self.mirror["mx"] + self.calculated_fam["calculated_mx"],
+                    "my": self.mirror["my"] + self.calculated_fam["calculated_my"],
+                    "mz": self.mirror["mz"] + self.calculated_fam["calculated_mz"],
                 }
             )
 
@@ -627,7 +721,7 @@ class AccelerationAndVelocity:
 
             self.mirror_res.rename(columns=lambda n: f"residuals_{n}", inplace=True)
 
-            self.residuals = self.mirror.join([self.calculated, self.mirror_res])
+            self.residuals = self.mirror.join([self.calculated_fam, self.mirror_res])
 
         assert self.residuals is not None
 
