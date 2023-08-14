@@ -1,1 +1,1 @@
-from .m1m3_aav import AccelerationAndVelocities
+from .m1m3_aav import AccelerationAndVelocity
