@@ -69,8 +69,7 @@ class AccelerationAndVelocity:
     interpolated : pd.DataFrame
         Interpolated raw data.
     intervals : pd.DataFrame
-        Contains start, end and use flag (whenever to use the interval) of
-        intervals suitable for fitting.
+        Contains start and end times of intervals suitable for fitting.
     mirror : pd.DataFrame
         Mirror forces. Contains interpolated data, with extra X0..11, Y0..99
         and Z0..155 columns - those contain data derived from hardpoint forces
@@ -277,7 +276,7 @@ class AccelerationAndVelocity:
         """Find start and end times of any axis movents. Uses self.elevations
         and self.azimuths data retrieved in find_az_el method.
 
-        Fills self.intervals with start and stop times usefull for fitting.
+        Fills self.intervals with start and stop times useful for fitting.
         """
         assert self.azimuths is not None
         assert self.elevations is not None
@@ -308,13 +307,7 @@ class AccelerationAndVelocity:
             end = index - row["timediff"]
             if start is not None and (end - start) > pd.Timedelta(seconds=0.5):
                 if self.was_raised(start, end):
-                    ret.append(
-                        [
-                            start,
-                            end,
-                            True,
-                        ]
-                    )
+                    ret.append([start, end])
                 else:
                     logging.warning(
                         f"Interval {start.isot} - {end.isot} "
@@ -322,18 +315,12 @@ class AccelerationAndVelocity:
                     )
             start = index
 
-        # if no movement, use full range - this is for short times usefulla ss
+        # if no movement, use full range - this is for short times useful for
         # tests
         if len(ret) == 0:
-            ret = [
-                [
-                    movements.index[0],
-                    movements.index[-1],
-                    True,
-                ]
-            ]
+            ret = [[movements.index[0], movements.index[-1]]]
 
-        self.intervals = pd.DataFrame(ret, columns=["start", "end", "use"])
+        self.intervals = pd.DataFrame(ret, columns=["start", "end"])
         self.intervals.index = self.intervals["start"]
 
     def calculate_forces_and_moments(self) -> None:
@@ -376,7 +363,7 @@ class AccelerationAndVelocity:
 
     async def load_hardpoints(self, start: Time, end: Time) -> None | pd.DataFrame:
         """Load hardpoint forces and moments in given interval. Those are used
-        to calculate (throuigh standard distribution matrices) per-actuator
+        to calculate (through standard distribution matrices) per-actuator
         offset forces. Those are target values for fitting of the acceleration
         and velocity forces.
 
@@ -425,7 +412,7 @@ class AccelerationAndVelocity:
         assert self.elevations is not None
 
         self.raw = pd.DataFrame()
-        for index, row in self.intervals[self.intervals.use].iterrows():
+        for index, row in self.intervals.iterrows():
             block_start = row["start"]
             block_end = row["end"]
             hardpoints = await self.load_hardpoints(Time(block_start), Time(block_end))
