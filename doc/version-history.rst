@@ -2,6 +2,11 @@
 Version History
 ===============
 
+v0.3.0
+======
+
+* m1m3-aav - fitting acceleration and velocity forces
+
 v0.2.0
 ======
 

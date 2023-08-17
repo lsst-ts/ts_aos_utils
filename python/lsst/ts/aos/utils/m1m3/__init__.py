@@ -1,1 +1,1 @@
-from m1m3_lut import run
+from .m1m3_aav import AccelerationAndVelocity
