@@ -533,6 +533,54 @@ class DiagnosticsM2:
         )
         return data, time_operation
 
+    def get_timestamp_closest_processed_inclinometer(
+        self,
+        data_zenith_angle: DataFrame,
+        processed_inclinometer: float,
+        timestamps_zenith_angle: numpy.typing.NDArray[np.float64],
+    ) -> float:
+        """Get the timestamp of the closest processed inclinometer.
+
+        Parameters
+        ----------
+        data_zenith_angle : `DataFrame`
+            Zenith angle data.
+        processed_inclinometer : `float`
+            Processed inclinometer in degree.
+        timestamps_zenith_angle : `numpy.ndaArray`
+            Timestamps of the zenith angle.
+
+        Returns
+        -------
+        `float`
+            Timestamp of the closest processed inclinometer
+        """
+
+        processed_inclinometers = np.array(data_zenith_angle.inclinometerProcessed)
+        idx = np.abs(processed_inclinometers - processed_inclinometer).argmin()
+
+        return timestamps_zenith_angle[idx]
+
+    def get_index_closest_timestamp(
+        self, timestamps: numpy.typing.NDArray[np.float64], timestamp: float
+    ) -> int:
+        """Get the index of closest timestamp.
+
+        Parameters
+        ----------
+        timestamps : `numpy.ndarray`
+            Timestamps (in data A).
+        timestamp : `float`
+            Specific timestamp (exists in data A or B).
+
+        Returns
+        -------
+        `int`
+            Index of closed timestamp.
+        """
+
+        return np.abs(timestamps - timestamp).argmin()
+
     def get_xy_actuators(
         self,
         control_closed_loop: MockControlClosedLoop,
@@ -763,71 +811,247 @@ class DiagnosticsM2:
         idx = (np.abs(timestamps - timestamp)).argmin()
         return values[idx]
 
-    def draw_forces(
+    async def get_data_power_status(
+        self,
+        time_start: Time,
+        time_end: Time,
+        realign_time: bool = True,
+    ) -> tuple[DataFrame, numpy.typing.NDArray[np.float64]]:
+        """
+        Query and return the power status data.
+
+        Parameters
+        ----------
+        time_start : `astropy.time.core.Time`
+            Start time.
+        time_end : `astropy.time.core.Time`
+            End time.
+        realign_time : `bool`, optional
+            Realign the timestamp to origin or not (0-based). (the default is
+            True)
+
+        Returns
+        -------
+        data : `pandas.core.frame.DataFrame`
+            Position data.
+        time_operation : `numpy.ndarray`
+            Operation time.
+        """
+
+        data, time_operation = await self._query_data(
+            "powerStatus",
+            [
+                "motorVoltage",
+                "motorCurrent",
+                "commVoltage",
+                "commCurrent",
+                "private_sndStamp",
+            ],
+            time_start,
+            time_end,
+            realign_time,
+        )
+        return data, time_operation
+
+    async def get_data_step_axial(
+        self, time_start: Time, time_end: Time, realign_time: bool = True
+    ) -> tuple[numpy.typing.NDArray[int], numpy.typing.NDArray[np.float64]]:
+        """
+        Query and return the axial actuator's step data.
+
+        Parameters
+        ----------
+        time_start : `astropy.time.core.Time`
+            Start time.
+        time_end : `astropy.time.core.Time`
+            End time.
+        realign_time : `bool`, optional
+            Realign the timestamp to origin or not (0-based). (the default is
+            True)
+
+        Returns
+        -------
+        data : `numpy.ndarray`
+            Step data.
+        time_operation : `numpy.ndarray`
+            Operation time.
+        """
+
+        # Prepare the fields
+        component = ["steps"]
+        num_axial = NUM_ACTUATOR - NUM_TANGENT_LINK
+        fields_axial = self._get_fields_array(component, [num_axial])
+
+        # Query the data
+        data, time_operation = await self._query_data(
+            "axialActuatorSteps",
+            fields_axial + ["private_sndStamp"],
+            time_start,
+            time_end,
+            realign_time,
+        )
+
+        # Only 1 component
+        data_collected = self._collect_data_array(data, component, [num_axial])
+
+        return data_collected["steps"], time_operation
+
+    async def get_data_step_tangent(
+        self, time_start: Time, time_end: Time, realign_time: bool = True
+    ) -> tuple[numpy.typing.NDArray[int], numpy.typing.NDArray[np.float64]]:
+        """
+        Query and return the tangential actuator's step data.
+
+        Parameters
+        ----------
+        time_start : `astropy.time.core.Time`
+            Start time.
+        time_end : `astropy.time.core.Time`
+            End time.
+        realign_time : `bool`, optional
+            Realign the timestamp to origin or not (0-based). (the default is
+            True)
+
+        Returns
+        -------
+        data : `numpy.ndarray`
+            Step data.
+        time_operation : `numpy.ndarray`
+            Operation time.
+        """
+
+        # Prepare the fields
+        component = ["steps"]
+        fields_tangent = self._get_fields_array(component, [NUM_TANGENT_LINK])
+
+        # Query the data
+        data, time_operation = await self._query_data(
+            "tangentActuatorSteps",
+            fields_tangent + ["private_sndStamp"],
+            time_start,
+            time_end,
+            realign_time,
+        )
+
+        # Only 1 component
+        data_collected = self._collect_data_array(data, component, [NUM_TANGENT_LINK])
+
+        return data_collected["steps"], time_operation
+
+    def draw_values(
         self,
         xy_actuators: numpy.typing.NDArray[np.float64],
-        force_axial: numpy.typing.NDArray[np.float64],
-        force_tangent: numpy.typing.NDArray[np.float64],
+        values_axial: numpy.typing.NDArray[np.float64 | int],
+        values_tangent: numpy.typing.NDArray[np.float64 | int],
         max_marker_size: int = 300,
+        title: str = "",
+        hardpoints: list[int] | None = None,
     ) -> None:
-        """Draw the forces.
+        """Draw the values on x, y map.
 
         Parameters
         ----------
         xy_actuators : `numpy.ndarray`
             X, Y positions of actuators.
-        force_axial : `numpy.ndarray`
-            Axial actuator forces in Newton.
-        force_tangent : `numpy.ndarray`
-            Tangent actuator forces in Newton.
+        values_axial : `numpy.ndarray`
+            Axial actuator values.
+        values_tangent : `numpy.ndarray`
+            Tangent actuator values.
         max_marker_size : `float`, optional
             Maximum marker size. (the defautl is 300)
+        title : `str`, optional
+            Title. (the default is "")
+        hardpoints : `list` or None, optional
+            Ordered 0-based six hardpoints. The first three are the axial
+            actuators and the latters are the tangent links. If not None, they
+            will be labeled on the drawing. (the default is None)
         """
 
-        max_force_axial = np.max(np.abs(force_axial))
-        max_force_tangent = np.max(np.abs(force_tangent))
+        max_value_axial = np.max(np.abs(values_axial))
+        max_value_tangent = np.max(np.abs(values_tangent))
 
         magnification_axial = (
-            max_marker_size / max_force_axial if max_force_axial != 0 else 1
+            max_marker_size / max_value_axial if max_value_axial != 0 else 1
         )
         magnification_tangent = (
-            max_marker_size / max_force_tangent if max_force_tangent != 0 else 1
+            max_marker_size / max_value_tangent if max_value_tangent != 0 else 1
         )
 
         fig, ax = plt.subplots(2, 1, figsize=(5, 10))
 
         # Draw the axial actuators
+        ax[0].set_title("Axial Actuators")
         img = ax[0].scatter(
             xy_actuators[:-NUM_TANGENT_LINK, 0],
             xy_actuators[:-NUM_TANGENT_LINK, 1],
-            s=np.abs(force_axial) * magnification_axial,
-            c=force_axial,
-            vmin=min(force_axial),
-            vmax=max(force_axial),
+            s=np.abs(values_axial) * magnification_axial,
+            c=values_axial,
+            vmin=min(values_axial),
+            vmax=max(values_axial),
         )
         fig.colorbar(img, ax=ax[0])
 
         plt.ylabel("Y position (m)")
 
         # Draw the tangent links
+        ax[1].set_title("Tangent Links")
         img = ax[1].scatter(
             xy_actuators[-NUM_TANGENT_LINK:, 0],
             xy_actuators[-NUM_TANGENT_LINK:, 1],
-            s=np.abs(force_tangent) * magnification_tangent,
-            c=force_tangent,
-            vmin=min(force_tangent),
-            vmax=max(force_tangent),
+            s=np.abs(values_tangent) * magnification_tangent,
+            c=values_tangent,
+            vmin=min(values_tangent),
+            vmax=max(values_tangent),
         )
         fig.colorbar(img, ax=ax[1])
 
         plt.xlabel("X position (m)")
 
+        # Label the hardpoints
+        if hardpoints is not None:
+            for hardpoint in hardpoints:
+                alias = self.get_alias_based_on_actuator_id(hardpoint)
+
+                ax_actuator = ax[1] if alias.startswith("A") else ax[0]
+                ax_actuator.annotate(alias, xy_actuators[hardpoint, :])
+
         ax[0].axis("equal")
         ax[1].axis("equal")
 
-        plt.title("Force Difference between Destination and Origin")
+        plt.suptitle(title)
 
         plt.show()
+
+    def get_alias_based_on_actuator_id(self, actuator_id: int) -> str:
+        """Get the actuator's alias based on the actuator ID.
+
+        Notes
+        -----
+        Actuator numbers in ring B, C, D, and A are 30, 24, 18, and 6. If the
+        actuator ID is 5, the alias is B6. If it is 30, the alias is C1. The
+        tangent links belong to the ring A. Note the alias is 1-based.
+
+        Parameters
+        ----------
+        actuator_id : `int`
+            0-based actuator ID.
+
+        Returns
+        -------
+        `str`
+            Actuator alias.
+        """
+
+        index = actuator_id + 1
+
+        if actuator_id < 30:
+            return f"B{index}"
+        elif 30 <= actuator_id < 54:
+            return f"C{index - 30}"
+        elif 54 <= actuator_id < 72:
+            return f"D{index - 54}"
+        else:
+            return f"A{index - 72}"
 
     def plot_positions(
         self,
