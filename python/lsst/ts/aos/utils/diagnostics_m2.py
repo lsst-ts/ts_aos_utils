@@ -26,46 +26,23 @@ import numpy as np
 import numpy.typing
 from astropy.time.core import Time
 from lsst.ts.m2com import NUM_ACTUATOR, NUM_TANGENT_LINK, MockControlClosedLoop
-from lsst_efd_client import EfdClient
 from matplotlib.axes import SubplotBase
 from pandas.core.frame import DataFrame
 
+from .diagnostics_default import DiagnosticsDefault
 
-class DiagnosticsM2:
+
+class DiagnosticsM2(DiagnosticsDefault):
     """M2 diagnostics class to query and plot the data.
 
     Parameters
     ----------
     is_summit : `bool`, optional
         This is running on the summit or not. (the default is True)
-
-    Attributes
-    ----------
-    efd_client : `lsst_efd_client.efd_helper.EfdClient`
-        Engineer facility database (EFD) client.
     """
 
     def __init__(self, is_summit: bool = True) -> None:
-        self.efd_client = self._retrieve_efd_client(is_summit)
-
-    def _retrieve_efd_client(self, is_summit: bool) -> EfdClient:
-        """
-        Retrieve a client to engineer facility database (EFD).
-
-        Parameters
-        ----------
-        is_summit : `bool`
-            This is running on the summit or not. If not, the returned object
-            will point to the test stand at Tucson.
-
-        Returns
-        -------
-        `EfdClient`
-            The interface object between the Nublado and summit/Tucson EFD.
-        """
-
-        efd_name = "summit_efd" if is_summit else "tucson_teststand_efd"
-        return EfdClient(efd_name)
+        super().__init__(is_summit=is_summit)
 
     async def get_data_position(
         self,
@@ -98,64 +75,13 @@ class DiagnosticsM2:
             Operation time.
         """
 
-        data, time_operation = await self._query_data(
-            position_telemetry_name,
+        data, time_operation = await self.query_data(
+            f"MTM2.{position_telemetry_name}",
             ["x", "y", "z", "xRot", "yRot", "zRot", "private_sndStamp"],
             time_start,
             time_end,
             realign_time,
         )
-        return data, time_operation
-
-    async def _query_data(
-        self,
-        name: str,
-        fields: list[str],
-        time_start: Time,
-        time_end: Time,
-        realign_time: bool,
-    ) -> tuple[DataFrame, numpy.typing.NDArray[np.float64]]:
-        """Query the EFD data.
-
-        Parameters
-        ----------
-        name : `str`
-            Topic name.
-        fields : `list`
-            Fields.
-        time_start : `astropy.time.core.Time`
-            Start time.
-        time_end : `astropy.time.core.Time`
-            End time.
-        realign_time : `bool`
-            Realign the timestamp to origin (0-based) or not.
-
-        Returns
-        -------
-        data : `pandas.core.frame.DataFrame`
-            Position data.
-        time_operation : `numpy.ndarray`
-            Operation time.
-        """
-        data = await self.efd_client.select_time_series(
-            f"lsst.sal.MTM2.{name}",
-            fields=fields,
-            start=time_start,
-            end=time_end,
-        )
-
-        # Realign the time origin to 0
-        name_timestamp = "private_sndStamp"
-        if hasattr(data, name_timestamp):
-            timestamps = getattr(data, name_timestamp)
-            time_operation = (
-                np.array(timestamps.subtract(timestamps[0]))
-                if realign_time
-                else np.array(timestamps)
-            )
-        else:
-            time_operation = np.array([])
-
         return data, time_operation
 
     async def get_data_net_force(
@@ -185,8 +111,8 @@ class DiagnosticsM2:
             Operation time.
         """
 
-        data, time_operation = await self._query_data(
-            "netForcesTotal",
+        data, time_operation = await self.query_data(
+            "MTM2.netForcesTotal",
             ["fx", "fy", "fz", "private_sndStamp"],
             time_start,
             time_end,
@@ -222,8 +148,8 @@ class DiagnosticsM2:
             Operation time.
         """
 
-        data, time_operation = await self._query_data(
-            "forceBalance",
+        data, time_operation = await self.query_data(
+            "MTM2.forceBalance",
             ["fx", "fy", "fz", "mx", "my", "mz", "private_sndStamp"],
             time_start,
             time_end,
@@ -258,8 +184,8 @@ class DiagnosticsM2:
             Operation time.
         """
 
-        data, time_operation = await self._query_data(
-            "netMomentsTotal",
+        data, time_operation = await self.query_data(
+            "MTM2.netMomentsTotal",
             ["mx", "my", "mz", "private_sndStamp"],
             time_start,
             time_end,
@@ -289,8 +215,8 @@ class DiagnosticsM2:
         # Get the position of axial actuators
         num_axial = NUM_ACTUATOR - NUM_TANGENT_LINK
         fields_axial = [f"position{idx}" for idx in range(num_axial)]
-        data_axial, _ = await self._query_data(
-            "axialEncoderPositions",
+        data_axial, _ = await self.query_data(
+            "MTM2.axialEncoderPositions",
             fields_axial,
             time_start,
             time_end,
@@ -299,8 +225,8 @@ class DiagnosticsM2:
 
         # Get the position of tangent links
         fields_tangent = [f"position{idx}" for idx in range(NUM_TANGENT_LINK)]
-        data_tangent, _ = await self._query_data(
-            "tangentEncoderPositions",
+        data_tangent, _ = await self.query_data(
+            "MTM2.tangentEncoderPositions",
             fields_tangent,
             time_start,
             time_end,
@@ -351,21 +277,21 @@ class DiagnosticsM2:
         num_components = len(components)
         num_axial = NUM_ACTUATOR - NUM_TANGENT_LINK
 
-        fields_axial = self._get_fields_array(components, [num_axial] * num_components)
-        fields_tangent = self._get_fields_array(
+        fields_axial = self.get_fields_array(components, [num_axial] * num_components)
+        fields_tangent = self.get_fields_array(
             components, [NUM_TANGENT_LINK] * num_components
         )
 
         # Query the data
-        data_axial, _ = await self._query_data(
-            "axialForce",
+        data_axial, _ = await self.query_data(
+            "MTM2.axialForce",
             fields_axial + ["private_sndStamp"],
             time_start,
             time_end,
             False,
         )
-        data_tangent, _ = await self._query_data(
-            "tangentForce",
+        data_tangent, _ = await self.query_data(
+            "MTM2.tangentForce",
             fields_tangent + ["private_sndStamp"],
             time_start,
             time_end,
@@ -382,27 +308,6 @@ class DiagnosticsM2:
         return self._set_force_error(data_collected_axial), self._set_force_error(
             data_collected_tangent
         )
-
-    def _get_fields_array(self, components: list[str], numbers: list[int]) -> list[str]:
-        """Get the fields of array.
-
-        Parameters
-        ----------
-        components : `list`
-            List of the components.
-        numbers : `list`
-            List of the number of array elements.
-
-        Returns
-        -------
-        fields : `list`
-            Fields.
-        """
-        fields: list = list()
-        for component, number in zip(components, numbers):
-            fields = fields + [f"{component}{idx}" for idx in range(number)]
-
-        return fields
 
     def _collect_data_array(
         self, data_raw: DataFrame, components: list[str], numbers: list[int]
@@ -484,11 +389,11 @@ class DiagnosticsM2:
         # Prepare the fields
         components = ["ring", "intake", "exhaust"]
         numbers = [12, 2, 2]
-        fields_temperature = self._get_fields_array(components, numbers)
+        fields_temperature = self.get_fields_array(components, numbers)
 
         # Query the data
-        data, _ = await self._query_data(
-            "temperature",
+        data, _ = await self.query_data(
+            "MTM2.temperature",
             fields_temperature + ["private_sndStamp"],
             time_start,
             time_end,
@@ -524,8 +429,8 @@ class DiagnosticsM2:
             Operation time.
         """
 
-        data, time_operation = await self._query_data(
-            "zenithAngle",
+        data, time_operation = await self.query_data(
+            "MTM2.zenithAngle",
             ["measured", "inclinometerProcessed", "private_sndStamp"],
             time_start,
             time_end,
@@ -838,8 +743,8 @@ class DiagnosticsM2:
             Operation time.
         """
 
-        data, time_operation = await self._query_data(
-            "powerStatus",
+        data, time_operation = await self.query_data(
+            "MTM2.powerStatus",
             [
                 "motorVoltage",
                 "motorCurrent",
@@ -880,11 +785,11 @@ class DiagnosticsM2:
         # Prepare the fields
         component = ["steps"]
         num_axial = NUM_ACTUATOR - NUM_TANGENT_LINK
-        fields_axial = self._get_fields_array(component, [num_axial])
+        fields_axial = self.get_fields_array(component, [num_axial])
 
         # Query the data
-        data, time_operation = await self._query_data(
-            "axialActuatorSteps",
+        data, time_operation = await self.query_data(
+            "MTM2.axialActuatorSteps",
             fields_axial + ["private_sndStamp"],
             time_start,
             time_end,
@@ -922,11 +827,11 @@ class DiagnosticsM2:
 
         # Prepare the fields
         component = ["steps"]
-        fields_tangent = self._get_fields_array(component, [NUM_TANGENT_LINK])
+        fields_tangent = self.get_fields_array(component, [NUM_TANGENT_LINK])
 
         # Query the data
-        data, time_operation = await self._query_data(
-            "tangentActuatorSteps",
+        data, time_operation = await self.query_data(
+            "MTM2.tangentActuatorSteps",
             fields_tangent + ["private_sndStamp"],
             time_start,
             time_end,
