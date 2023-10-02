@@ -3,6 +3,14 @@ Version History
 ===============
 
 =======
+v0.4.0
+======
+
+* Add the **DiagnosticsDefault** and **DiagnosticsHexapod** classes.
+* Add the new settings to ``.ts_pre_commit_config.yaml``.
+* Skip the installation of **pre-commit** in ``lint.yaml``.
+
+=======
 v0.3.1
 ======
 

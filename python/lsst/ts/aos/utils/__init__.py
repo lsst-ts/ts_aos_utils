@@ -24,4 +24,6 @@ try:
 except ImportError:
     __version__ = "?"
 
+from .diagnostics_default import DiagnosticsDefault
+from .diagnostics_hexapod import DiagnosticsHexapod
 from .diagnostics_m2 import DiagnosticsM2
