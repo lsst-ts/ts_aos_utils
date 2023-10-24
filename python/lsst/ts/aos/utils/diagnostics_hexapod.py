@@ -29,6 +29,7 @@ from matplotlib.axes import SubplotBase
 from pandas.core.frame import DataFrame
 
 from .diagnostics_default import DiagnosticsDefault
+from .enum import EfdName
 
 
 class DiagnosticsHexapod(DiagnosticsDefault):
@@ -39,8 +40,9 @@ class DiagnosticsHexapod(DiagnosticsDefault):
     is_camera_hexapod : `bool`, optional
         This is the camera hexapod or not. If not, it will be the M2 hexapod.
         (the default is True)
-    is_summit : `bool`, optional
-        This is running on the summit or not. (the default is True)
+    efd_name : enum `EfdName`, optional
+        Engineer facility database (EFD) name. (the default is
+        EfdName.Summit)
     """
 
     # Number of Copley drives to control the actuators
@@ -57,10 +59,12 @@ class DiagnosticsHexapod(DiagnosticsDefault):
 
     NM_TO_UM = 1e-3
 
-    def __init__(self, is_camera_hexapod: bool = True, is_summit: bool = True) -> None:
+    def __init__(
+        self, is_camera_hexapod: bool = True, efd_name: EfdName = EfdName.Summit
+    ) -> None:
         index = 1 if is_camera_hexapod else 2
 
-        super().__init__(index=index, is_summit=is_summit)
+        super().__init__(index=index, efd_name=efd_name)
 
     async def get_data_actuators(
         self,
