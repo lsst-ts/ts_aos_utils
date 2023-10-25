@@ -30,6 +30,7 @@ from matplotlib.axes import SubplotBase
 from pandas.core.frame import DataFrame
 
 from .diagnostics_default import DiagnosticsDefault
+from .enum import EfdName
 
 
 class DiagnosticsM2(DiagnosticsDefault):
@@ -37,12 +38,13 @@ class DiagnosticsM2(DiagnosticsDefault):
 
     Parameters
     ----------
-    is_summit : `bool`, optional
-        This is running on the summit or not. (the default is True)
+    efd_name : enum `EfdName`, optional
+        Engineer facility database (EFD) name. (the default is
+        EfdName.Summit)
     """
 
-    def __init__(self, is_summit: bool = True) -> None:
-        super().__init__(is_summit=is_summit)
+    def __init__(self, efd_name: EfdName = EfdName.Summit) -> None:
+        super().__init__(efd_name=efd_name)
 
     async def get_data_position(
         self,

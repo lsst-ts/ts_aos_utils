@@ -27,6 +27,8 @@ from astropy.time.core import Time
 from lsst_efd_client import EfdClient
 from pandas.core.frame import DataFrame
 
+from .enum import EfdName
+
 
 class DiagnosticsDefault:
     """Default diagnostics class to query the data.
@@ -35,28 +37,30 @@ class DiagnosticsDefault:
     ----------
     index : `int` or None, optional
         SAL index. (the default is None).
-    is_summit : `bool`, optional
-        This is running on the summit or not. (the default is True)
+    efd_name : enum `EfdName`, optional
+        Engineer facility database (EFD) name. (the default is
+        EfdName.Summit)
 
     Attributes
     ----------
     efd_client : `lsst_efd_client.efd_helper.EfdClient`
-        Engineer facility database (EFD) client.
+        EFD client.
     """
 
-    def __init__(self, index: int | None = None, is_summit: bool = True) -> None:
+    def __init__(
+        self, index: int | None = None, efd_name: EfdName = EfdName.Summit
+    ) -> None:
         self._index = index
-        self.efd_client = self._retrieve_efd_client(is_summit)
+        self.efd_client = self._retrieve_efd_client(efd_name)
 
-    def _retrieve_efd_client(self, is_summit: bool) -> EfdClient:
+    def _retrieve_efd_client(self, efd_name: EfdName) -> EfdClient:
         """
         Retrieve a client to engineer facility database (EFD).
 
         Parameters
         ----------
-        is_summit : `bool`
-            This is running on the summit or not. If not, the returned object
-            will point to the test stand at Tucson.
+        efd_name : enum `EfdName`
+            EFD name.
 
         Returns
         -------
@@ -64,8 +68,20 @@ class DiagnosticsDefault:
             The interface object between the Nublado and summit/Tucson EFD.
         """
 
-        efd_name = "summit_efd" if is_summit else "tucson_teststand_efd"
-        return EfdClient(efd_name)
+        match efd_name:
+            case EfdName.Summit:
+                name = "summit_efd"
+
+            case EfdName.TucsonTeststand:
+                name = "tucson_teststand_efd"
+
+            case EfdName.Base:
+                name = "base_efd"
+
+            case EfdName.Usdf:
+                name = "usdf_efd"
+
+        return EfdClient(name)
 
     def get_fields_array(self, components: list[str], numbers: list[int]) -> list[str]:
         """Get the fields of array.

@@ -19,12 +19,15 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-try:
-    from .version import *
-except ImportError:
-    __version__ = "?"
+from enum import IntEnum, auto
 
-from .diagnostics_default import DiagnosticsDefault
-from .diagnostics_hexapod import DiagnosticsHexapod
-from .diagnostics_m2 import DiagnosticsM2
-from .enum import EfdName
+__all__ = ["EfdName"]
+
+
+class EfdName(IntEnum):
+    """Engineer facility database (EFD) name."""
+
+    Summit = 1
+    TucsonTeststand = auto()
+    Base = auto()
+    Usdf = auto()
