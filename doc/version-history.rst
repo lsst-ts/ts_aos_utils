@@ -3,6 +3,12 @@ Version History
 ===============
 
 =======
+v0.4.2
+======
+
+* Support the IDF EFD.
+
+=======
 v0.4.1
 ======
 
