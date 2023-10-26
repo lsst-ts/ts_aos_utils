@@ -19,15 +19,16 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from enum import IntEnum, auto
+from enum import StrEnum
 
 __all__ = ["EfdName"]
 
 
-class EfdName(IntEnum):
+class EfdName(StrEnum):
     """Engineer facility database (EFD) name."""
 
-    Summit = 1
-    TucsonTeststand = auto()
-    Base = auto()
-    Usdf = auto()
+    Summit = "summit_efd"
+    TucsonTeststand = "tucson_teststand_efd"
+    Base = "base_efd"
+    Usdf = "usdf_efd"
+    Idf = "idf_efd"

@@ -51,37 +51,7 @@ class DiagnosticsDefault:
         self, index: int | None = None, efd_name: EfdName = EfdName.Summit
     ) -> None:
         self._index = index
-        self.efd_client = self._retrieve_efd_client(efd_name)
-
-    def _retrieve_efd_client(self, efd_name: EfdName) -> EfdClient:
-        """
-        Retrieve a client to engineer facility database (EFD).
-
-        Parameters
-        ----------
-        efd_name : enum `EfdName`
-            EFD name.
-
-        Returns
-        -------
-        `EfdClient`
-            The interface object between the Nublado and summit/Tucson EFD.
-        """
-
-        match efd_name:
-            case EfdName.Summit:
-                name = "summit_efd"
-
-            case EfdName.TucsonTeststand:
-                name = "tucson_teststand_efd"
-
-            case EfdName.Base:
-                name = "base_efd"
-
-            case EfdName.Usdf:
-                name = "usdf_efd"
-
-        return EfdClient(name)
+        self.efd_client = EfdClient(efd_name.value)
 
     def get_fields_array(self, components: list[str], numbers: list[int]) -> list[str]:
         """Get the fields of array.
