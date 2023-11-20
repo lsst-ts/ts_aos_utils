@@ -24,7 +24,7 @@ __all__ = ["DiagnosticsDefault"]
 import numpy as np
 import numpy.typing
 from astropy.time.core import Time
-from lsst_efd_client import EfdClient
+from lsst_efd_client import EfdClient, rendezvous_dataframes
 from pandas.core.frame import DataFrame
 
 from .enum import EfdName
@@ -127,3 +127,64 @@ class DiagnosticsDefault:
             time_operation = np.array([])
 
         return data, time_operation
+
+    def rendezvous_dataframes(
+        self,
+        left: DataFrame,
+        rights: list[DataFrame],
+    ) -> None | DataFrame:
+        """Extend each record in "left" with a corresponding record in
+        "rights", if one exists.
+
+        Parameters
+        ----------
+        left : `pandas.core.frame.DataFrame`
+            The "DataFrame" to extend.
+        rights : `list` [`pandas.core.frame.DataFrame`]
+            The "DataFrame"s to rendezvous with "left".
+
+        Returns
+        -------
+        merged_data : None or `pandas.core.frame.DataFrame`
+            Merged data.
+        """
+
+        merged_data = None
+        for idx, right in enumerate(rights):
+            left_in_use = left if (idx == 0) else merged_data
+            merged_data = rendezvous_dataframes(left_in_use, right)
+
+        return merged_data
+
+    def print_block_info(self, day_obs: int, block_num: int) -> None:
+        """Print the block information.
+
+        Parameters
+        ----------
+        day_obs : `int`
+            Observation date such as 20231115.
+        block_num : `int`
+            Block number.
+        """
+
+        # Try to import the BlockParser from lsst_summit package.
+        # This is supported after the w_2023_47.
+        # For the RSP at USDF, the current default version is w_2023_37.
+        # TODO: Remove this workaround after the USDF RSP upgraded the default
+        # version.
+        from lsst.summit.utils.blockUtils import BlockParser
+
+        block_parser = BlockParser(day_obs)
+
+        block_nums = block_parser.getBlockNums()
+        if block_num in block_nums:
+            seq_nums = block_parser.getSeqNums(block_num)
+            for seq_num in seq_nums:
+                info = block_parser.getBlockInfo(block_num, seq_num)
+                print(f"{block_num=} - {seq_num=}")
+                print(f"Final state: {info.states[-1]}")
+                print("Full Info:")
+                print(f"{info}")
+
+        else:
+            print(f"Available block numbers are {block_nums}.")

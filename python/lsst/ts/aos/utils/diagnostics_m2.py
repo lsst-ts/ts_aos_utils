@@ -336,7 +336,7 @@ class DiagnosticsM2(DiagnosticsDefault):
         for component, number in zip(components, numbers):
             values = np.zeros((num_row, number))
             for idx in range(number):
-                values[:, idx] = np.array(getattr(data_raw, f"{component}{idx}"))
+                values[:, idx] = np.array(data_raw.get(f"{component}{idx}"))
 
             data_collected[component] = values
 
@@ -844,6 +844,81 @@ class DiagnosticsM2(DiagnosticsDefault):
         data_collected = self._collect_data_array(data, component, [NUM_TANGENT_LINK])
 
         return data_collected["steps"], time_operation
+
+    async def get_data_force_error_tangent(
+        self, time_start: Time, time_end: Time
+    ) -> dict:
+        """
+        Query and return the tangent force error data.
+
+        Parameters
+        ----------
+        time_start : `astropy.time.core.Time`
+            Start time.
+        time_end : `astropy.time.core.Time`
+            End time.
+
+        Returns
+        -------
+        data_collected : `dict`
+            Tangent force error data.
+        """
+
+        # Prepare the fields
+        components = ["force"]
+        numbers = [6]
+        fields_force = self.get_fields_array(components, numbers)
+
+        # Query the data
+        data, _ = await self.query_data(
+            "MTM2.forceErrorTangent",
+            fields_force + ["weight", "sum", "private_sndStamp"],
+            time_start,
+            time_end,
+            False,
+        )
+
+        data_collected = self._collect_data_array(data, components, numbers)
+        data_collected["weight"] = np.array(data.get("weight"))
+        data_collected["sum"] = np.array(data.get("sum"))
+
+        return data_collected
+
+    async def get_event_force_balance_system_status(
+        self,
+        time_start: Time,
+        time_end: Time,
+        realign_time: bool = True,
+    ) -> tuple[DataFrame, numpy.typing.NDArray[np.float64]]:
+        """
+        Query and return the event of force balance system status.
+
+        Parameters
+        ----------
+        time_start : `astropy.time.core.Time`
+            Start time.
+        time_end : `astropy.time.core.Time`
+            End time.
+        realign_time : `bool`, optional
+            Realign the timestamp to origin or not (0-based). (the default is
+            True)
+
+        Returns
+        -------
+        data : `pandas.core.frame.DataFrame`
+            Force balance system status data.
+        time_operation : `numpy.ndarray`
+            Operation time.
+        """
+
+        data, time_operation = await self.query_data(
+            "MTM2.logevent_forceBalanceSystemStatus",
+            ["status", "private_sndStamp"],
+            time_start,
+            time_end,
+            realign_time,
+        )
+        return data, time_operation
 
     def draw_values(
         self,

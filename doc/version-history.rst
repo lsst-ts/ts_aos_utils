@@ -3,6 +3,12 @@ Version History
 ===============
 
 =======
+v0.5.0
+======
+
+* Add the **DiagnosticsMTMount** class.
+
+=======
 v0.4.2
 ======
 
