@@ -30,9 +30,9 @@ import pathlib
 import numpy as np
 import pandas as pd
 from astropy.time import Time
-from lsst.ts.criopy import M1M3FATable
+from lsst.ts.xml.tables.m1m3 import FATable, FATABLE_XFA, FATABLE_YFA, FATABLE_ZFA
 from lsst.ts.criopy.m1m3 import AccelerationAndVelocityFitter, ForceCalculator
-from lsst.ts.idl.enums.MTM1M3 import DetailedState
+from lsst.ts.idl.enums.MTM1M3 import DetailedStates
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
 
@@ -55,6 +55,8 @@ class AccelerationAndVelocity:
     azimuths : pd.DataFrame
         Mount azimuth. Contains actual and demand Position, Velocity and
         Acceleration.
+    accelerometers : pd.DataFrame
+        DC Accelerometers angular acceleration values.
     calculated_fam : pd.DataFrame
         Forces and moments calculated from the fit.
     coefficients : pd.DataFrame
@@ -93,6 +95,7 @@ class AccelerationAndVelocity:
         self.detailed_states: pd.DataFrame | None = None
 
         self.azimuths: pd.DataFrame | None = None
+        self.accelerometers: pd.DataFrame | None = None
         self.calculated_fam: pd.DataFrame | None = None
         self.coefficients: pd.DataFrame | None = None
         self.detailed_states: pd.DataFrame | None = None
@@ -116,6 +119,7 @@ class AccelerationAndVelocity:
 
             for loads in [
                 "azimuths",
+                "accelerometers",
                 "calculated_fam",
                 "coefficients",
                 "elevations",
@@ -182,9 +186,9 @@ class AccelerationAndVelocity:
         last_state = self.detailed_states[
             self.detailed_states.index < pd.to_datetime(start, utc=True)
         ]["detailedState"].iloc[-1]
-        if DetailedState(last_state) not in (
-            DetailedState.ACTIVE,
-            DetailedState.ACTIVEENGINEERING,
+        if DetailedStates(last_state) not in (
+            DetailedStates.ACTIVE,
+            DetailedStates.ACTIVEENGINEERING,
         ):
             return False
         states = self.detailed_states[
@@ -196,8 +200,8 @@ class AccelerationAndVelocity:
                 states[
                     ~states.detailedState.isin(
                         [
-                            DetailedState.ACTIVE,
-                            DetailedState.ACTIVEENGINEERING,
+                            DetailedStates.ACTIVE,
+                            DetailedStates.ACTIVEENGINEERING,
                         ]
                     )
                 ].index
@@ -310,8 +314,7 @@ class AccelerationAndVelocity:
                     ret.append([start, end])
                 else:
                     logging.warning(
-                        f"Interval {start.isot} - {end.isot} "
-                        "mirror was not raised, ignoring."
+                        f"Interval {start} - {end} " "mirror was not raised, ignoring."
                     )
             start = index
 
@@ -361,6 +364,58 @@ class AccelerationAndVelocity:
         )
         self.calculated_fam.set_index(self.fitter.aav.index, inplace=True)
 
+    async def load_accelerometers(self, start: Time, end: Time) -> None | pd.DataFrame:
+        """Load DC accelerometers data in given interval. Those are used for
+        acceleration  corrections.
+
+        Parameters
+        ----------
+        start : Time
+            Search interval start time.
+        end : Time
+            Search interval end time.
+
+        Returns
+        -------
+        ret : pd.DataFrame
+            Time indexed dataframe with measured DC accelerometers values (angularAcceleration[XYZ]).
+        """
+        logging.debug(f"Retrieving accelerometer data for {start.isot} - {end.isot}..")
+        ret = await self.client.select_time_series(
+            "lsst.sal.MTM1M3.accelerometerData",
+            ["timestamp"]
+            + [f"rawAccelerometer{acc}" for acc in range(8)]
+            + [f"accelerometer{acc}" for acc in range(8)]
+            + [f"angularAcceleration{a}" for a in "XYZ"],
+            start,
+            end,
+        )
+        if ret.empty:
+            logging.debug("empty, ignored")
+            return None
+        ret.set_index(
+            pd.DatetimeIndex(
+                Time(Time(ret["timestamp"], format="unix_tai"), scale="utc").isot
+            ),
+            inplace=True,
+        )
+        logging.debug(f"..OK ({len(ret.index)} records)")
+        return ret
+
+    async def collect_accelerometers_data(self) -> None:
+        """Collect DC accelerometers data for intervals specified in self.intervals DataFrame.
+
+        Fills self.accelerometers DataFrame.
+        """
+        assert self.intervals is not None
+
+        self.accelerometers = pd.DataFrame()
+        for index, row in self.intervals.iterrows():
+            block_start = row["start"]
+            block_end = row["end"]
+            accels = await self.load_accelerometers(Time(block_start), Time(block_end))
+            self.accelerometers = pd.concat([self.accelerometers, accels])
+
     async def load_hardpoints(self, start: Time, end: Time) -> None | pd.DataFrame:
         """Load hardpoint forces and moments in given interval. Those are used
         to calculate (through standard distribution matrices) per-actuator
@@ -403,13 +458,14 @@ class AccelerationAndVelocity:
         return ret
 
     async def collect_hardpoint_data(self) -> None:
-        """Collect hardpoint forces for interval specified in self.intervals
+        """Collect hardpoint forces for intervals specified in self.intervals
         DataFrame.
 
         Fills self.raw DataFrame.
         """
         assert self.azimuths is not None
         assert self.elevations is not None
+        assert self.intervals is not None
 
         self.raw = pd.DataFrame()
         for index, row in self.intervals.iterrows():
@@ -440,9 +496,9 @@ class AccelerationAndVelocity:
         Fills self.mirror DataFrame.
         """
         fa_names = (
-            [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
-            + [f"Y{y}" for y in range(M1M3FATable.FATABLE_YFA)]
-            + [f"Z{z}" for z in range(M1M3FATable.FATABLE_ZFA)]
+            [f"X{x}" for x in range(FATABLE_XFA)]
+            + [f"Y{y}" for y in range(FATABLE_YFA)]
+            + [f"Z{z}" for z in range(FATABLE_ZFA)]
         )
 
         def fa_forces(row: pd.Series) -> pd.Series:
@@ -546,6 +602,7 @@ class AccelerationAndVelocity:
         end_time: Time,
         out_dir: pathlib.Path,
         fit_values: str,
+        no_accelerometers: bool,
         set_new: bool,
         plot: bool,
         hd5_debug: None | pathlib.Path,
@@ -562,6 +619,8 @@ class AccelerationAndVelocity:
             Directory where output files will be stored.
         fit_values : str
             Whenever to fit actual or demand values.
+        no_accelerometers : bool
+            If set to true, don't use DC accelerometers values for acceleration.
         set_new : bool
             Don't add fit to existing values. If true, it's assumed data were
             collected without acceleration and velocity compensations.
@@ -571,7 +630,6 @@ class AccelerationAndVelocity:
             If not None, store intermediate data into this hd5 file.
         """
         self.client = EfdClient(self.efd_name)
-        self._plot = plot
 
         if self.azimuths is None or self.elevations is None:
             await self.find_az_el(start_time, end_time)
@@ -581,7 +639,6 @@ class AccelerationAndVelocity:
 
         if self.intervals is None:
             await self.load_detailed_state(start_time, end_time)
-
             await self.find_applicable_times()
 
         assert self.intervals is not None
@@ -602,6 +659,29 @@ class AccelerationAndVelocity:
         assert self.raw is not None
 
         self.raw.sort_index(inplace=True)
+
+        if no_accelerometers is False:
+            if self.accelerometers is None:
+                await self.collect_accelerometers_data()
+
+            assert self.accelerometers is not None
+
+            self.accelerometers.sort_index(inplace=True)
+
+            if hd5_debug is not None:
+                self.accelerometers.to_hdf(hd5_debug, "accelerometers")
+
+            self.accelerometers.rename(
+                columns=lambda n: f"accelerometers_{n}", inplace=True
+            )
+
+            logging.info(
+                f"Accelerometers data retrieved, has {len(self.accelerometers.index)} rows."
+            )
+            self.raw = self.raw.merge(
+                self.accelerometers, how="outer", left_index=True, right_index=True
+            )
+
         if hd5_debug is not None:
             self.raw.to_hdf(hd5_debug, "raw")
 
@@ -641,7 +721,7 @@ class AccelerationAndVelocity:
         )
 
         # prepare for fit A @ x = B
-        self.fitter = AccelerationAndVelocityFitter(self.mirror, fit_values)
+        self.fitter = AccelerationAndVelocityFitter(self.mirror, fit_values, fit_values if no_accelerometers else "meters")
         if hd5_debug is not None:
             self.fitter.aav.to_hdf(hd5_debug, "A")
 
@@ -765,6 +845,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Fit actual or demand accelerations and velocities",
     )
     parser.add_argument(
+        "--no-accelerometers",
+        action="store_true",
+        help="Don't use DC accelerometers, use TMA values",
+    )
+    parser.add_argument(
         "--plot", default=False, action="store_true", help="Plot graphs during"
     )
     parser.add_argument(
@@ -828,6 +913,7 @@ async def run_loop() -> None:
         args.end_time,
         args.out_dir,
         args.fit_values,
+        args.no_accelerometers,
         args.set_new,
         args.plot,
         args.hd5_debug,
