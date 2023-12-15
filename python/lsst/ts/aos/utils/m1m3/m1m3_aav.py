@@ -713,15 +713,17 @@ class AccelerationAndVelocity:
         old_coeff = np.mean(
             np.concatenate(
                 (
-                    self.force_calculator.velocity_tables,
-                    self.force_calculator.acceleration_tables,
+                    [t.data for t in self.force_calculator.velocity_tables],
+                    [t.data for t in self.force_calculator.acceleration_tables],
                 ),
                 axis=None,
             )
         )
 
         # prepare for fit A @ x = B
-        self.fitter = AccelerationAndVelocityFitter(self.mirror, fit_values, fit_values if no_accelerometers else "meters")
+        self.fitter = AccelerationAndVelocityFitter(
+            self.mirror, fit_values, fit_values if no_accelerometers else "meters"
+        )
         if hd5_debug is not None:
             self.fitter.aav.to_hdf(hd5_debug, "A")
 
@@ -741,8 +743,8 @@ class AccelerationAndVelocity:
         new_coeff = np.mean(
             np.concatenate(
                 (
-                    self.force_calculator.velocity_tables,
-                    self.force_calculator.acceleration_tables,
+                    [t.data for t in self.force_calculator.velocity_tables],
+                    [t.data for t in self.force_calculator.acceleration_tables],
                 ),
                 axis=None,
             )
@@ -800,7 +802,17 @@ class AccelerationAndVelocity:
         except FileExistsError:
             pass
 
-        self.force_calculator.save(out_dir)
+        if set_new:
+            self.force_calculator.save(
+                out_dir,
+                f"Calculated from slews {start_time.isot} - {end_time.isot}",
+                reset_comments=True,
+            )
+        else:
+            self.force_calculator.save(
+                out_dir, f"Updated with slews {start_time.isot} - {end_time.isot}"
+            )
+
         logging.info(f"Saved new tables into {out_dir} directory")
 
         if plot:
