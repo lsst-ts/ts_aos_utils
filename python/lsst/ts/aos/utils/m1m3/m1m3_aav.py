@@ -287,6 +287,9 @@ class AccelerationAndVelocity:
 
         ret = []
 
+        # timestamps of all measurements when TMA was moving
+        # add last row from elevations - it will not show in results, but is
+        # needed to show last movement in results
         movements = pd.concat(
             [
                 self.elevations[
@@ -297,6 +300,7 @@ class AccelerationAndVelocity:
                     (abs(self.azimuths.actualVelocity) > self.actual_velocity_limit)
                     | (abs(self.azimuths.demandVelocity) > self.demand_velocity_limit)
                 ],
+                self.elevations.tail(1),
             ]
         )
 
@@ -454,6 +458,11 @@ class AccelerationAndVelocity:
             ),
             inplace=True,
         )
+        # HP forces and moments has opposite direction to FA - that's hidden in
+        # distribution matrix we need to multiple by -1 all value columns. Drop
+        # timestamp first, as we don't need it after passing it to index.
+        ret = ret.drop(columns="timestamp").mul(-1)
+
         logging.debug(f"..OK ({len(ret.index)} records)")
         return ret
 
@@ -517,6 +526,8 @@ class AccelerationAndVelocity:
         self.mirror = self.interpolated.merge(
             applied, how="left", left_index=True, right_index=True
         )
+        self.mirror.dropna(inplace=True)
+        logging.info(f"Processing {len(self.mirror.index)} records")
 
     def plot_acc_forces(self) -> None:
         """Plot together velocity, acceleration and calculated forces."""
