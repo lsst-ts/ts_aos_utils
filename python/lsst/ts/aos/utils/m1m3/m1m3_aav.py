@@ -30,9 +30,9 @@ import pathlib
 import numpy as np
 import pandas as pd
 from astropy.time import Time
-from lsst.ts.xml.tables.m1m3 import FATable, FATABLE_XFA, FATABLE_YFA, FATABLE_ZFA
 from lsst.ts.criopy.m1m3 import AccelerationAndVelocityFitter, ForceCalculator
 from lsst.ts.idl.enums.MTM1M3 import DetailedStates
+from lsst.ts.xml.tables.m1m3 import FATABLE_XFA, FATABLE_YFA, FATABLE_ZFA
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
 
@@ -382,7 +382,8 @@ class AccelerationAndVelocity:
         Returns
         -------
         ret : pd.DataFrame
-            Time indexed dataframe with measured DC accelerometers values (angularAcceleration[XYZ]).
+            Time indexed dataframe with measured DC accelerometers values
+            (angularAcceleration[XYZ]).
         """
         logging.debug(f"Retrieving accelerometer data for {start.isot} - {end.isot}..")
         ret = await self.client.select_time_series(
@@ -407,7 +408,9 @@ class AccelerationAndVelocity:
         return ret
 
     async def collect_accelerometers_data(self) -> None:
-        """Collect DC accelerometers data for intervals specified in self.intervals DataFrame.
+        """
+        Collect DC accelerometers data for intervals specified in
+        self.intervals DataFrame.
 
         Fills self.accelerometers DataFrame.
         """
@@ -631,7 +634,8 @@ class AccelerationAndVelocity:
         fit_values : str
             Whenever to fit actual or demand values.
         no_accelerometers : bool
-            If set to true, don't use DC accelerometers values for acceleration.
+            If set to true, don't use DC accelerometers values for
+            acceleration.
         set_new : bool
             Don't add fit to existing values. If true, it's assumed data were
             collected without acceleration and velocity compensations.
