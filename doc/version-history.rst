@@ -3,6 +3,12 @@ Version History
 ===============
 
 =======
+v0.5.1
+======
+
+* Improved acceleration and velocity fitting script
+
+=======
 v0.5.0
 ======
 

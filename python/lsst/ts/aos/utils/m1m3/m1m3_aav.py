@@ -461,12 +461,9 @@ class AccelerationAndVelocity:
             ),
             inplace=True,
         )
-        # HP forces and moments has opposite direction to FA - that's hidden in
-        # distribution matrix we need to multiple by -1 all value columns. Drop
-        # timestamp first, as we don't need it after passing it to index.
-        ret = ret.drop(columns="timestamp").mul(-1)
-
         logging.debug(f"..OK ({len(ret.index)} records)")
+
+        ret.drop(columns="timestamp", inplace=True)
         return ret
 
     async def collect_hardpoint_data(self) -> None:
@@ -538,7 +535,7 @@ class AccelerationAndVelocity:
 
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(nrows=3, ncols=1)
+        fig, axes = plt.subplots(nrows=3, ncols=1, sharex=True)
 
         for r, m_ax in enumerate("xyz"):
             axis = "elevation" if m_ax == "x" else "azimuth"
@@ -559,7 +556,10 @@ class AccelerationAndVelocity:
                 secondary_y=True,
             )
             self.mirror.plot(
-                y=["mx", "my", "mz"], ax=axes[r], style=".-", secondary_y=True
+                y=["mx", "my", "mz"],
+                ax=axes[r],
+                style=".-",
+                secondary_y=True,
             )
 
         plt.show()
@@ -571,7 +571,7 @@ class AccelerationAndVelocity:
         import matplotlib.pyplot as plt
 
         for ax in ["azimuth", "elevation"]:
-            fig, axes = plt.subplots(nrows=3, ncols=1)
+            fig, axes = plt.subplots(nrows=3, ncols=1, sharex=True)
             self.mirror.plot(
                 y=[f"{ax}_demandPosition", f"{ax}_actualPosition"],
                 ax=axes[0],
@@ -596,17 +596,21 @@ class AccelerationAndVelocity:
 
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(nrows=6, ncols=1)
+        fig, axes = plt.subplots(nrows=9, ncols=1, sharex=True)
 
-        def plot_axis(name: str, row: int) -> None:
-            self.residuals.plot(
-                y=[f"{name}", f"calculated_{name}", f"residuals_{name}"],
-                ax=axes[row],
-                style=".-",
+        for r, ax in enumerate("XYZ"):
+            self.accelerometers.plot(
+                y=f"angularAcceleration{ax}",
+                ax=axes[r],
+                style=".",
             )
 
         for r, ax in enumerate([f"f{a}" for a in "xyz"] + [f"m{a}" for a in "xyz"]):
-            plot_axis(ax, r)
+            self.residuals.plot(
+                y=[f"{ax}", f"calculated_{ax}", f"residuals_{ax}"],
+                ax=axes[r + 3],
+                style=".",
+            )
 
         plt.show()
 
@@ -686,15 +690,14 @@ class AccelerationAndVelocity:
             if hd5_debug is not None:
                 self.accelerometers.to_hdf(hd5_debug, "accelerometers")
 
-            self.accelerometers.rename(
-                columns=lambda n: f"accelerometers_{n}", inplace=True
-            )
-
             logging.info(
                 f"Accelerometers data retrieved, has {len(self.accelerometers.index)} rows."
             )
             self.raw = self.raw.merge(
-                self.accelerometers, how="outer", left_index=True, right_index=True
+                self.accelerometers.rename(columns=lambda n: f"accelerometers_{n}"),
+                how="outer",
+                left_index=True,
+                right_index=True,
             )
 
         if hd5_debug is not None:
