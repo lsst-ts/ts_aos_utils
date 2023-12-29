@@ -38,6 +38,8 @@ from tqdm import tqdm
 
 tqdm.pandas()
 
+RAD2D = np.degrees(1)
+
 
 class AccelerationAndVelocity:
     """Compute fit of the M1M3 accelerations and velocities forces.
@@ -531,14 +533,15 @@ class AccelerationAndVelocity:
 
     def plot_acc_forces(self) -> None:
         """Plot together velocity, acceleration and calculated forces."""
+        assert self.fitter is not None
+        assert self.mirror is not None
         assert self.raw is not None
 
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(nrows=3, ncols=1, sharex=True)
+        fig, axes = plt.subplots(nrows=3, ncols=3, sharex=True)
 
-        for r, m_ax in enumerate("xyz"):
-            axis = "elevation" if m_ax == "x" else "azimuth"
+        for r, axis in enumerate(["elevation", "azimuth"]):
             self.mirror.plot(
                 y=[
                     f"{axis}_demandVelocity",
@@ -546,18 +549,45 @@ class AccelerationAndVelocity:
                     f"{axis}_demandAcceleration",
                     f"{axis}_actualAcceleration",
                 ],
-                ax=axes[r],
+                ax=axes[r, 0],
                 style=".-",
             )
-            self.calculated_fam.plot(
-                y=["calculated_mx", "calculated_my", "calculated_mz"],
-                ax=axes[r],
+
+        for axis in "xyz":
+            self.fitter.aav[f"A_{axis}"].mul(RAD2D).plot(
+                ax=axes[2, 0],
+                style=".-",
+            )
+            self.fitter.aav[f"V_{axis}2"].mul(RAD2D).plot(
+                ax=axes[2, 0],
+                style=".-",
+            )
+
+        for r, m_ax in enumerate("xyz"):
+            axis = "elevation" if m_ax == "x" else "azimuth"
+
+            self.raw.plot(
+                y=f"f{m_ax}",
+                ax=axes[r, 1],
                 style=".-",
                 secondary_y=True,
             )
-            self.mirror.plot(
-                y=["mx", "my", "mz"],
-                ax=axes[r],
+            self.raw.plot(
+                y=f"m{m_ax}",
+                ax=axes[r, 2],
+                style=".-",
+                secondary_y=True,
+            )
+
+            self.calculated_fam.plot(
+                y=f"calculated_f{m_ax}",
+                ax=axes[r, 1],
+                style=".-",
+                secondary_y=True,
+            )
+            self.calculated_fam.plot(
+                y=f"calculated_m{m_ax}",
+                ax=axes[r, 2],
                 style=".-",
                 secondary_y=True,
             )
@@ -590,25 +620,55 @@ class AccelerationAndVelocity:
 
             plt.show()
 
-    def plot_residuals(self) -> None:
-        """Plot fit residuals."""
+    def plot_acceleration_residuals(self) -> None:
+        """Plot acceleration and fitted residuals."""
+        assert self.fitter is not None
         assert self.residuals is not None
 
         import matplotlib.pyplot as plt
 
         fig, axes = plt.subplots(nrows=9, ncols=1, sharex=True)
 
-        for r, ax in enumerate("XYZ"):
-            self.accelerometers.plot(
-                y=f"angularAcceleration{ax}",
+        for r, ax in enumerate("xyz"):
+            self.fitter.aav[f"A_{ax}"].mul(RAD2D).plot(
                 ax=axes[r],
                 style=".",
             )
 
         for r, ax in enumerate([f"f{a}" for a in "xyz"] + [f"m{a}" for a in "xyz"]):
             self.residuals.plot(
-                y=[f"{ax}", f"calculated_{ax}", f"residuals_{ax}"],
+                y=[ax, f"residuals_{ax}"],
                 ax=axes[r + 3],
+                style=".",
+            )
+
+        plt.show()
+
+    def plot_velocity_residuals(self) -> None:
+        """Plot velocity and fitted residuals."""
+        assert self.fitter is not None
+        assert self.residuals is not None
+
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(nrows=11, ncols=1, sharex=True)
+
+        for r, ax in enumerate("xyz"):
+            self.fitter.aav[f"V_{ax}2"].mul(RAD2D).plot(
+                ax=axes[r],
+                style=".",
+            )
+
+        for r, ax in enumerate("xy"):
+            self.fitter.aav[f"V_{ax}z"].mul(RAD2D).plot(
+                ax=axes[r + 3],
+                style=".",
+            )
+
+        for r, ax in enumerate([f"f{a}" for a in "xyz"] + [f"m{a}" for a in "xyz"]):
+            self.residuals.plot(
+                y=[ax, f"residuals_{ax}"],
+                ax=axes[r + 5],
                 style=".",
             )
 
@@ -824,7 +884,8 @@ class AccelerationAndVelocity:
         logging.info(f"Saved new tables into {out_dir} directory")
 
         if plot:
-            self.plot_residuals()
+            self.plot_acceleration_residuals()
+            self.plot_velocity_residuals()
 
 
 def parse_arguments() -> argparse.Namespace:
