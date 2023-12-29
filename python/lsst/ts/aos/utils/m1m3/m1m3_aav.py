@@ -728,15 +728,10 @@ class AccelerationAndVelocity:
         if plot:
             self.plot_axes()
 
-        old_coeff = np.mean(
-            np.concatenate(
-                (
-                    [t.data for t in self.force_calculator.velocity_tables],
-                    [t.data for t in self.force_calculator.acceleration_tables],
-                ),
-                axis=None,
-            )
-        )
+        old_coef = pd.concat(
+            [t.data for t in self.force_calculator.velocity_tables]
+            + [t.data for t in self.force_calculator.acceleration_tables],
+        ).mean()
 
         # prepare for fit A @ x = B
         self.fitter = AccelerationAndVelocityFitter(
@@ -758,20 +753,15 @@ class AccelerationAndVelocity:
         else:
             self.force_calculator.update_acceleration_and_velocity(self.coefficients)
 
-        new_coeff = np.mean(
-            np.concatenate(
-                (
-                    [t.data for t in self.force_calculator.velocity_tables],
-                    [t.data for t in self.force_calculator.acceleration_tables],
-                ),
-                axis=None,
-            )
-        )
+        new_coef = pd.concat(
+            [t.data for t in self.force_calculator.velocity_tables]
+            + [t.data for t in self.force_calculator.acceleration_tables],
+        ).mean()
 
         logging.info(
-            f"Coefficients mean - old {old_coeff:.2f}, "
+            f"Coefficients mean - old {old_coef.iloc[0]:.2f}, "
             f"current {self.coefficients.values.mean():.2f}, "
-            f"new {new_coeff:.2f}"
+            f"new {new_coef.iloc[0]:.2f}"
         )
 
         if self.calculated_fam is None:
