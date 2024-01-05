@@ -30,13 +30,15 @@ import pathlib
 import numpy as np
 import pandas as pd
 from astropy.time import Time
-from lsst.ts.criopy import M1M3FATable
 from lsst.ts.criopy.m1m3 import AccelerationAndVelocityFitter, ForceCalculator
-from lsst.ts.idl.enums.MTM1M3 import DetailedState
+from lsst.ts.idl.enums.MTM1M3 import DetailedStates
+from lsst.ts.xml.tables.m1m3 import FATABLE_XFA, FATABLE_YFA, FATABLE_ZFA
 from lsst_efd_client import EfdClient
 from tqdm import tqdm
 
 tqdm.pandas()
+
+RAD2D = np.degrees(1)
 
 
 class AccelerationAndVelocity:
@@ -55,6 +57,8 @@ class AccelerationAndVelocity:
     azimuths : pd.DataFrame
         Mount azimuth. Contains actual and demand Position, Velocity and
         Acceleration.
+    accelerometers : pd.DataFrame
+        DC Accelerometers angular acceleration values.
     calculated_fam : pd.DataFrame
         Forces and moments calculated from the fit.
     coefficients : pd.DataFrame
@@ -93,6 +97,7 @@ class AccelerationAndVelocity:
         self.detailed_states: pd.DataFrame | None = None
 
         self.azimuths: pd.DataFrame | None = None
+        self.accelerometers: pd.DataFrame | None = None
         self.calculated_fam: pd.DataFrame | None = None
         self.coefficients: pd.DataFrame | None = None
         self.detailed_states: pd.DataFrame | None = None
@@ -116,6 +121,7 @@ class AccelerationAndVelocity:
 
             for loads in [
                 "azimuths",
+                "accelerometers",
                 "calculated_fam",
                 "coefficients",
                 "elevations",
@@ -182,9 +188,9 @@ class AccelerationAndVelocity:
         last_state = self.detailed_states[
             self.detailed_states.index < pd.to_datetime(start, utc=True)
         ]["detailedState"].iloc[-1]
-        if DetailedState(last_state) not in (
-            DetailedState.ACTIVE,
-            DetailedState.ACTIVEENGINEERING,
+        if DetailedStates(last_state) not in (
+            DetailedStates.ACTIVE,
+            DetailedStates.ACTIVEENGINEERING,
         ):
             return False
         states = self.detailed_states[
@@ -196,8 +202,8 @@ class AccelerationAndVelocity:
                 states[
                     ~states.detailedState.isin(
                         [
-                            DetailedState.ACTIVE,
-                            DetailedState.ACTIVEENGINEERING,
+                            DetailedStates.ACTIVE,
+                            DetailedStates.ACTIVEENGINEERING,
                         ]
                     )
                 ].index
@@ -283,6 +289,9 @@ class AccelerationAndVelocity:
 
         ret = []
 
+        # timestamps of all measurements when TMA was moving
+        # add last row from elevations - it will not show in results, but is
+        # needed to show last movement in results
         movements = pd.concat(
             [
                 self.elevations[
@@ -293,6 +302,7 @@ class AccelerationAndVelocity:
                     (abs(self.azimuths.actualVelocity) > self.actual_velocity_limit)
                     | (abs(self.azimuths.demandVelocity) > self.demand_velocity_limit)
                 ],
+                self.elevations.tail(1),
             ]
         )
 
@@ -310,8 +320,7 @@ class AccelerationAndVelocity:
                     ret.append([start, end])
                 else:
                     logging.warning(
-                        f"Interval {start.isot} - {end.isot} "
-                        "mirror was not raised, ignoring."
+                        f"Interval {start} - {end} " "mirror was not raised, ignoring."
                     )
             start = index
 
@@ -361,6 +370,61 @@ class AccelerationAndVelocity:
         )
         self.calculated_fam.set_index(self.fitter.aav.index, inplace=True)
 
+    async def load_accelerometers(self, start: Time, end: Time) -> None | pd.DataFrame:
+        """Load DC accelerometers data in given interval. Those are used for
+        acceleration  corrections.
+
+        Parameters
+        ----------
+        start : Time
+            Search interval start time.
+        end : Time
+            Search interval end time.
+
+        Returns
+        -------
+        ret : pd.DataFrame
+            Time indexed dataframe with measured DC accelerometers values
+            (angularAcceleration[XYZ]).
+        """
+        logging.debug(f"Retrieving accelerometer data for {start.isot} - {end.isot}..")
+        ret = await self.client.select_time_series(
+            "lsst.sal.MTM1M3.accelerometerData",
+            ["timestamp"]
+            + [f"rawAccelerometer{acc}" for acc in range(8)]
+            + [f"accelerometer{acc}" for acc in range(8)]
+            + [f"angularAcceleration{a}" for a in "XYZ"],
+            start,
+            end,
+        )
+        if ret.empty:
+            logging.debug("empty, ignored")
+            return None
+        ret.set_index(
+            pd.DatetimeIndex(
+                Time(Time(ret["timestamp"], format="unix_tai"), scale="utc").isot
+            ),
+            inplace=True,
+        )
+        logging.debug(f"..OK ({len(ret.index)} records)")
+        return ret
+
+    async def collect_accelerometers_data(self) -> None:
+        """
+        Collect DC accelerometers data for intervals specified in
+        self.intervals DataFrame.
+
+        Fills self.accelerometers DataFrame.
+        """
+        assert self.intervals is not None
+
+        self.accelerometers = pd.DataFrame()
+        for index, row in self.intervals.iterrows():
+            block_start = row["start"]
+            block_end = row["end"]
+            accels = await self.load_accelerometers(Time(block_start), Time(block_end))
+            self.accelerometers = pd.concat([self.accelerometers, accels])
+
     async def load_hardpoints(self, start: Time, end: Time) -> None | pd.DataFrame:
         """Load hardpoint forces and moments in given interval. Those are used
         to calculate (through standard distribution matrices) per-actuator
@@ -400,16 +464,19 @@ class AccelerationAndVelocity:
             inplace=True,
         )
         logging.debug(f"..OK ({len(ret.index)} records)")
+
+        ret.drop(columns="timestamp", inplace=True)
         return ret
 
     async def collect_hardpoint_data(self) -> None:
-        """Collect hardpoint forces for interval specified in self.intervals
+        """Collect hardpoint forces for intervals specified in self.intervals
         DataFrame.
 
         Fills self.raw DataFrame.
         """
         assert self.azimuths is not None
         assert self.elevations is not None
+        assert self.intervals is not None
 
         self.raw = pd.DataFrame()
         for index, row in self.intervals.iterrows():
@@ -440,9 +507,9 @@ class AccelerationAndVelocity:
         Fills self.mirror DataFrame.
         """
         fa_names = (
-            [f"X{x}" for x in range(M1M3FATable.FATABLE_XFA)]
-            + [f"Y{y}" for y in range(M1M3FATable.FATABLE_YFA)]
-            + [f"Z{z}" for z in range(M1M3FATable.FATABLE_ZFA)]
+            [f"X{x}" for x in range(FATABLE_XFA)]
+            + [f"Y{y}" for y in range(FATABLE_YFA)]
+            + [f"Z{z}" for z in range(FATABLE_ZFA)]
         )
 
         def fa_forces(row: pd.Series) -> pd.Series:
@@ -461,17 +528,20 @@ class AccelerationAndVelocity:
         self.mirror = self.interpolated.merge(
             applied, how="left", left_index=True, right_index=True
         )
+        self.mirror.dropna(inplace=True)
+        logging.info(f"Processing {len(self.mirror.index)} records")
 
     def plot_acc_forces(self) -> None:
         """Plot together velocity, acceleration and calculated forces."""
+        assert self.fitter is not None
+        assert self.mirror is not None
         assert self.raw is not None
 
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(nrows=3, ncols=1)
+        fig, axes = plt.subplots(nrows=3, ncols=3, sharex=True)
 
-        for r, m_ax in enumerate("xyz"):
-            axis = "elevation" if m_ax == "x" else "azimuth"
+        for r, axis in enumerate(["elevation", "azimuth"]):
             self.mirror.plot(
                 y=[
                     f"{axis}_demandVelocity",
@@ -479,17 +549,47 @@ class AccelerationAndVelocity:
                     f"{axis}_demandAcceleration",
                     f"{axis}_actualAcceleration",
                 ],
-                ax=axes[r],
+                ax=axes[r, 0],
                 style=".-",
             )
-            self.calculated_fam.plot(
-                y=["calculated_mx", "calculated_my", "calculated_mz"],
-                ax=axes[r],
+
+        for axis in "xyz":
+            self.fitter.aav[f"A_{axis}"].mul(RAD2D).plot(
+                ax=axes[2, 0],
+                style=".-",
+            )
+            self.fitter.aav[f"V_{axis}2"].mul(RAD2D).plot(
+                ax=axes[2, 0],
+                style=".-",
+            )
+
+        for r, m_ax in enumerate("xyz"):
+            axis = "elevation" if m_ax == "x" else "azimuth"
+
+            self.raw.plot(
+                y=f"f{m_ax}",
+                ax=axes[r, 1],
                 style=".-",
                 secondary_y=True,
             )
-            self.mirror.plot(
-                y=["mx", "my", "mz"], ax=axes[r], style=".-", secondary_y=True
+            self.raw.plot(
+                y=f"m{m_ax}",
+                ax=axes[r, 2],
+                style=".-",
+                secondary_y=True,
+            )
+
+            self.calculated_fam.plot(
+                y=f"calculated_f{m_ax}",
+                ax=axes[r, 1],
+                style=".-",
+                secondary_y=True,
+            )
+            self.calculated_fam.plot(
+                y=f"calculated_m{m_ax}",
+                ax=axes[r, 2],
+                style=".-",
+                secondary_y=True,
             )
 
         plt.show()
@@ -501,7 +601,7 @@ class AccelerationAndVelocity:
         import matplotlib.pyplot as plt
 
         for ax in ["azimuth", "elevation"]:
-            fig, axes = plt.subplots(nrows=3, ncols=1)
+            fig, axes = plt.subplots(nrows=3, ncols=1, sharex=True)
             self.mirror.plot(
                 y=[f"{ax}_demandPosition", f"{ax}_actualPosition"],
                 ax=axes[0],
@@ -520,23 +620,57 @@ class AccelerationAndVelocity:
 
             plt.show()
 
-    def plot_residuals(self) -> None:
-        """Plot fit residuals."""
+    def plot_acceleration_residuals(self) -> None:
+        """Plot acceleration and fitted residuals."""
+        assert self.fitter is not None
         assert self.residuals is not None
 
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(nrows=6, ncols=1)
+        fig, axes = plt.subplots(nrows=9, ncols=1, sharex=True)
 
-        def plot_axis(name: str, row: int) -> None:
-            self.residuals.plot(
-                y=[f"{name}", f"calculated_{name}", f"residuals_{name}"],
-                ax=axes[row],
-                style=".-",
+        for r, ax in enumerate("xyz"):
+            self.fitter.aav[f"A_{ax}"].mul(RAD2D).plot(
+                ax=axes[r],
+                style=".",
             )
 
         for r, ax in enumerate([f"f{a}" for a in "xyz"] + [f"m{a}" for a in "xyz"]):
-            plot_axis(ax, r)
+            self.residuals.plot(
+                y=[ax, f"residuals_{ax}"],
+                ax=axes[r + 3],
+                style=".",
+            )
+
+        plt.show()
+
+    def plot_velocity_residuals(self) -> None:
+        """Plot velocity and fitted residuals."""
+        assert self.fitter is not None
+        assert self.residuals is not None
+
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(nrows=11, ncols=1, sharex=True)
+
+        for r, ax in enumerate("xyz"):
+            self.fitter.aav[f"V_{ax}2"].mul(RAD2D).plot(
+                ax=axes[r],
+                style=".",
+            )
+
+        for r, ax in enumerate("xy"):
+            self.fitter.aav[f"V_{ax}z"].mul(RAD2D).plot(
+                ax=axes[r + 3],
+                style=".",
+            )
+
+        for r, ax in enumerate([f"f{a}" for a in "xyz"] + [f"m{a}" for a in "xyz"]):
+            self.residuals.plot(
+                y=[ax, f"residuals_{ax}"],
+                ax=axes[r + 5],
+                style=".",
+            )
 
         plt.show()
 
@@ -546,6 +680,7 @@ class AccelerationAndVelocity:
         end_time: Time,
         out_dir: pathlib.Path,
         fit_values: str,
+        no_accelerometers: bool,
         set_new: bool,
         plot: bool,
         hd5_debug: None | pathlib.Path,
@@ -562,6 +697,9 @@ class AccelerationAndVelocity:
             Directory where output files will be stored.
         fit_values : str
             Whenever to fit actual or demand values.
+        no_accelerometers : bool
+            If set to true, don't use DC accelerometers values for
+            acceleration.
         set_new : bool
             Don't add fit to existing values. If true, it's assumed data were
             collected without acceleration and velocity compensations.
@@ -571,7 +709,6 @@ class AccelerationAndVelocity:
             If not None, store intermediate data into this hd5 file.
         """
         self.client = EfdClient(self.efd_name)
-        self._plot = plot
 
         if self.azimuths is None or self.elevations is None:
             await self.find_az_el(start_time, end_time)
@@ -581,7 +718,6 @@ class AccelerationAndVelocity:
 
         if self.intervals is None:
             await self.load_detailed_state(start_time, end_time)
-
             await self.find_applicable_times()
 
         assert self.intervals is not None
@@ -602,6 +738,28 @@ class AccelerationAndVelocity:
         assert self.raw is not None
 
         self.raw.sort_index(inplace=True)
+
+        if no_accelerometers is False:
+            if self.accelerometers is None:
+                await self.collect_accelerometers_data()
+
+            assert self.accelerometers is not None
+
+            self.accelerometers.sort_index(inplace=True)
+
+            if hd5_debug is not None:
+                self.accelerometers.to_hdf(hd5_debug, "accelerometers")
+
+            logging.info(
+                f"Accelerometers data retrieved, has {len(self.accelerometers.index)} rows."
+            )
+            self.raw = self.raw.merge(
+                self.accelerometers.rename(columns=lambda n: f"accelerometers_{n}"),
+                how="outer",
+                left_index=True,
+                right_index=True,
+            )
+
         if hd5_debug is not None:
             self.raw.to_hdf(hd5_debug, "raw")
 
@@ -630,18 +788,15 @@ class AccelerationAndVelocity:
         if plot:
             self.plot_axes()
 
-        old_coeff = np.mean(
-            np.concatenate(
-                (
-                    self.force_calculator.velocity_tables,
-                    self.force_calculator.acceleration_tables,
-                ),
-                axis=None,
-            )
-        )
+        old_coef = pd.concat(
+            [t.data for t in self.force_calculator.velocity_tables]
+            + [t.data for t in self.force_calculator.acceleration_tables],
+        ).mean()
 
         # prepare for fit A @ x = B
-        self.fitter = AccelerationAndVelocityFitter(self.mirror, fit_values)
+        self.fitter = AccelerationAndVelocityFitter(
+            self.mirror, fit_values, fit_values if no_accelerometers else "meters"
+        )
         if hd5_debug is not None:
             self.fitter.aav.to_hdf(hd5_debug, "A")
 
@@ -658,20 +813,15 @@ class AccelerationAndVelocity:
         else:
             self.force_calculator.update_acceleration_and_velocity(self.coefficients)
 
-        new_coeff = np.mean(
-            np.concatenate(
-                (
-                    self.force_calculator.velocity_tables,
-                    self.force_calculator.acceleration_tables,
-                ),
-                axis=None,
-            )
-        )
+        new_coef = pd.concat(
+            [t.data for t in self.force_calculator.velocity_tables]
+            + [t.data for t in self.force_calculator.acceleration_tables],
+        ).mean()
 
         logging.info(
-            f"Coefficients mean - old {old_coeff:.2f}, "
+            f"Coefficients mean - old {old_coef.iloc[0]:.2f}, "
             f"current {self.coefficients.values.mean():.2f}, "
-            f"new {new_coeff:.2f}"
+            f"new {new_coef.iloc[0]:.2f}"
         )
 
         if self.calculated_fam is None:
@@ -720,11 +870,22 @@ class AccelerationAndVelocity:
         except FileExistsError:
             pass
 
-        self.force_calculator.save(out_dir)
+        if set_new:
+            self.force_calculator.save(
+                out_dir,
+                f"Calculated from slews {start_time.isot} - {end_time.isot}",
+                reset_comments=True,
+            )
+        else:
+            self.force_calculator.save(
+                out_dir, f"Updated with slews {start_time.isot} - {end_time.isot}"
+            )
+
         logging.info(f"Saved new tables into {out_dir} directory")
 
         if plot:
-            self.plot_residuals()
+            self.plot_acceleration_residuals()
+            self.plot_velocity_residuals()
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -763,6 +924,11 @@ def parse_arguments() -> argparse.Namespace:
         choices=["actual", "demand"],
         default="actual",
         help="Fit actual or demand accelerations and velocities",
+    )
+    parser.add_argument(
+        "--no-accelerometers",
+        action="store_true",
+        help="Don't use DC accelerometers, use TMA values",
     )
     parser.add_argument(
         "--plot", default=False, action="store_true", help="Plot graphs during"
@@ -828,6 +994,7 @@ async def run_loop() -> None:
         args.end_time,
         args.out_dir,
         args.fit_values,
+        args.no_accelerometers,
         args.set_new,
         args.plot,
         args.hd5_debug,
