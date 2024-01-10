@@ -9,7 +9,14 @@ license = { text = "GPL" }
 classifiers = [ "Programming Language :: Python :: 3" ]
 urls = { documentation = "https://jira.lsstcorp.org/secure/Dashboard.jspa", repository = "https://github.com/lsst-ts/ts_aos_utils" }
 dynamic = [ "version" ]
-dependencies = [ "astropy", "numpy", "pandas", "scipy", "tqdm" ]
+dependencies = [ 
+  "astropy",
+  "numpy",
+  "pandas",
+  "scipy",
+  "tqdm",
+  "ts_xml",
+]
  
 [project.scripts]
 m1m3-aav = "lsst.ts.aos.utils.m1m3.m1m3_aav:run"
