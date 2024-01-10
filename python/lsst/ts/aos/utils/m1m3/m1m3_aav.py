@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 from astropy.time import Time
 from lsst.ts.criopy.m1m3 import AccelerationAndVelocityFitter, ForceCalculator
-from lsst.ts.idl.enums.MTM1M3 import DetailedStates
+from lsst.ts.xml.enums.MTM1M3 import DetailedStates
 from lsst.ts.xml.tables.m1m3 import FATABLE_XFA, FATABLE_YFA, FATABLE_ZFA
 from lsst_efd_client import EfdClient
 from tqdm import tqdm

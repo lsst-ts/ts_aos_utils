@@ -7,6 +7,7 @@ v0.5.1
 ======
 
 * Improved acceleration and velocity fitting script
+* Replace ts_idl reference with ts_xml
 
 =======
 v0.5.0

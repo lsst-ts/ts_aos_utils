@@ -20,7 +20,7 @@ test:
     - astropy
     - scipy
     - ts-criopy >=0.4
-    - ts-idl
+    - ts-xml
   source_files:
     - python
     - tests
@@ -49,4 +49,4 @@ requirements:
     - tqdm
     - ts-m2com
     - ts-criopy =>0.4
-    - ts-idl
+    - ts-xml
