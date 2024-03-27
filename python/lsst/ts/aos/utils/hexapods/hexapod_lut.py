@@ -215,7 +215,3 @@ async def process_data(args: argparse.Namespace) -> None:
 def run() -> None:
     """Main function to run the process_data function."""
     asyncio.run(process_data(parse_arguments()))
-
-
-if __name__ == "__main__":
-    run()
