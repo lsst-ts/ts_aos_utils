@@ -3,7 +3,7 @@ Version History
 ===============
 
 =======
-v0.5.2
+v0.6
 ======
 
 * Add the **hexapod_lut.py**.
