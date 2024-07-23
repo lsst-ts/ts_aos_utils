@@ -119,7 +119,7 @@ class DiagnosticsDefault:
         if hasattr(data, name_timestamp):
             timestamps = getattr(data, name_timestamp)
             time_operation = (
-                np.array(timestamps.subtract(timestamps[0]))
+                np.array(timestamps.subtract(timestamps.iloc[0]))
                 if realign_time
                 else np.array(timestamps)
             )

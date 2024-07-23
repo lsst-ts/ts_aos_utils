@@ -247,7 +247,7 @@ class DiagnosticsM2(DiagnosticsDefault):
         return displacements
 
     async def get_data_force(
-        self, time_start: Time, time_end: Time
+        self, time_start: Time, time_end: Time, hardpoints: list[int]
     ) -> tuple[dict, dict]:
         """
         Query and return the actuator's force data.
@@ -258,6 +258,9 @@ class DiagnosticsM2(DiagnosticsDefault):
             Start time.
         time_end : `astropy.time.core.Time`
             End time.
+        hardpoints: `list` [`int`]
+            Ordered 0-based six hardpoints. The first three are the axial
+            actuators and the latters are the tangent links.
 
         Returns
         -------
@@ -307,9 +310,11 @@ class DiagnosticsM2(DiagnosticsDefault):
             data_tangent, components, [NUM_TANGENT_LINK] * num_components
         )
 
-        return self._set_force_error(data_collected_axial), self._set_force_error(
-            data_collected_tangent
-        )
+        hardpoints_tangent = [hardpoint - num_axial for hardpoint in hardpoints[3:]]
+
+        return self._set_force_error(
+            data_collected_axial, hardpoints[:3]
+        ), self._set_force_error(data_collected_tangent, hardpoints_tangent)
 
     def _collect_data_array(
         self, data_raw: DataFrame, components: list[str], numbers: list[int]
@@ -348,13 +353,15 @@ class DiagnosticsM2(DiagnosticsDefault):
 
         return data_collected
 
-    def _set_force_error(self, data_force: dict) -> dict:
+    def _set_force_error(self, data_force: dict, hardpoints: list[int]) -> dict:
         """Set the force error.
 
         Parameters
         ----------
         data_force : `dict`
             Force data.
+        hardpoints: `list` [`int`]
+            Ordered 0-based hardpoints.
 
         Returns
         -------
@@ -369,6 +376,10 @@ class DiagnosticsM2(DiagnosticsDefault):
             + data_force["applied"]
             - data_force["measured"]
         )
+
+        # Force error of hardpoints should be 0
+        data_force["error"][:, hardpoints] = 0.0
+
         return data_force
 
     async def get_data_temperature(self, time_start: Time, time_end: Time) -> dict:

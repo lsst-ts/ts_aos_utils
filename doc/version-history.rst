@@ -3,6 +3,12 @@ Version History
 ===============
 
 =======
+v0.5.2
+======
+
+* Fix the force error of hardpoints in M2.
+
+=======
 v0.5.1
 ======
 
