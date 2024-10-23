@@ -3,6 +3,12 @@ Version History
 ===============
 
 =======
+v0.5.3
+======
+
+* Update README.rst file with the requirements. 
+
+=======
 v0.5.2
 ======
 
