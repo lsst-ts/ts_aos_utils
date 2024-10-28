@@ -3,6 +3,12 @@ Version History
 ===============
 
 =======
+v0.5.4
+======
+
+* Fix the deprecation warning.
+
+=======
 v0.5.3
 ======
 
