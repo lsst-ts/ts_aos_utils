@@ -242,7 +242,7 @@ class DiagnosticsM2(DiagnosticsDefault):
                 if idx < num_axial
                 else getattr(data_tangent, f"position{idx-num_axial}")
             )
-            displacements[idx] = position[-1] - position[0]
+            displacements[idx] = position.iloc[-1] - position.iloc[0]
 
         return displacements
 
@@ -640,17 +640,17 @@ class DiagnosticsM2(DiagnosticsDefault):
             temperature_ring = self._find_nearest_value_based_on_timestamp(
                 data_temperature["ring"],
                 np.array(data_temperature["timestamp"]),
-                data_main["timestamp"][idx],
+                data_main["timestamp"].iloc[idx],
             )
             temperature_intake = self._find_nearest_value_based_on_timestamp(
                 data_temperature["intake"],
                 np.array(data_temperature["timestamp"]),
-                data_main["timestamp"][idx],
+                data_main["timestamp"].iloc[idx],
             )
             temperature_exhaust = self._find_nearest_value_based_on_timestamp(
                 data_temperature["exhaust"],
                 np.array(data_temperature["timestamp"]),
-                data_main["timestamp"][idx],
+                data_main["timestamp"].iloc[idx],
             )
 
             control_closed_loop.temperature["ring"] = temperature_ring.tolist()  # type: ignore
@@ -661,7 +661,7 @@ class DiagnosticsM2(DiagnosticsDefault):
             force_measured_minor = self._find_nearest_value_based_on_timestamp(
                 data_minor["measured"],
                 np.array(data_minor["timestamp"]),
-                data_main["timestamp"][idx],
+                data_main["timestamp"].iloc[idx],
             )
 
             if update_axial:
@@ -676,9 +676,9 @@ class DiagnosticsM2(DiagnosticsDefault):
             # Calculate the LUT force. Note the "processed" inclinometer angle
             # is used in the LUT calculation.
             lut_angle = self._find_nearest_value_based_on_timestamp(
-                data_zenith_angle["inclinometerProcessed"],
+                np.array(data_zenith_angle["inclinometerProcessed"]),
                 time_operation_angle,
-                data_main["timestamp"][idx],
+                data_main["timestamp"].iloc[idx],
             )
 
             control_closed_loop.calc_look_up_forces(lut_angle)
@@ -1282,7 +1282,9 @@ class DiagnosticsM2(DiagnosticsDefault):
         titles = ["axial", "tangent"]
         for data, number, ax, title in zip(datas, numbers, axs, titles):
             for idx in range(number):
-                ax.plot(data["timestamp"] - data["timestamp"][0], data["error"][:, idx])
+                ax.plot(
+                    data["timestamp"] - data["timestamp"].iloc[0], data["error"][:, idx]
+                )
 
             ax.set_title(title)
 
@@ -1310,7 +1312,7 @@ class DiagnosticsM2(DiagnosticsDefault):
         for ax, component in zip(axs, components):
             for idx in range(numbers_axial):
                 ax.plot(
-                    data_axial["timestamp"] - data_axial["timestamp"][0],
+                    data_axial["timestamp"] - data_axial["timestamp"].iloc[0],
                     data_axial[component][:, idx]
                     - data_axial[f"{component}Theoretical"][:, idx],
                 )
@@ -1338,7 +1340,7 @@ class DiagnosticsM2(DiagnosticsDefault):
 
         for idx in range(NUM_TANGENT_LINK):
             plt.plot(
-                data_tangent["timestamp"] - data_tangent["timestamp"][0],
+                data_tangent["timestamp"] - data_tangent["timestamp"].iloc[0],
                 data_tangent["lutGravity"][:, idx]
                 - data_tangent["lutGravityTheoretical"][:, idx],
             )
