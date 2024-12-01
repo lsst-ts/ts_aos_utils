@@ -3,6 +3,12 @@ Version History
 ===============
 
 =======
+v0.5.5
+======
+
+* Moved m1m3-aav to ts_m1m3_utils.
+
+=======
 v0.5.4
 ======
 
