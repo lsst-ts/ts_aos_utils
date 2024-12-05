@@ -2,6 +2,12 @@
 Version History
 ===============
 
+======
+v0.5.6
+======
+
+* Add the **DiagnosticsRotator** class.
+
 =======
 v0.5.5
 ======
