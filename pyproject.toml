@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 m1m3-aav = "lsst.ts.aos.utils.m1m3.m1m3_aav:run"
 m1m3-lut = "lsst.ts.aos.utils.m1m3.m1m3_lut:run"
+hexapod-lut = "lsst.ts.aos.utils.hexapods.hexapod_lut:run"
 
 [tools.setuptools]
 package-data = { "" = "*.csv"}

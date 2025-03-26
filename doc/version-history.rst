@@ -39,6 +39,12 @@ v0.5.2
 * Fix the force error of hardpoints in M2.
 
 =======
+v0.6.0
+======
+
+* Add the **hexapod_lut.py**.
+
+=======
 v0.5.1
 ======
 
