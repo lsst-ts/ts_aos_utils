@@ -27,6 +27,7 @@ except ImportError:
 from .diagnostics_default import DiagnosticsDefault
 from .diagnostics_hexapod import DiagnosticsHexapod
 from .diagnostics_m2 import DiagnosticsM2
+from .diagnostics_mtdome import DiagnosticsMTDome
 from .diagnostics_mtmount import DiagnosticsMTMount
 from .diagnostics_rotator import DiagnosticsRotator
 from .enum import EfdName

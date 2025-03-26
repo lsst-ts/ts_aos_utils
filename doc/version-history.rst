@@ -3,6 +3,12 @@ Version History
 ===============
 
 ======
+v0.5.7
+======
+
+* Add the **DiagnosticsMTDome** class.
+
+======
 v0.5.6
 ======
 
